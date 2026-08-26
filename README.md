@@ -41,13 +41,14 @@ A Telegram bot that lets users:
 - [x] Create GitHub repository
 - [x] Project structure & virtual environment
 - [x] Basic "Hello World" bot (`/start`, `/help`)
+- [x] Database layer (schema + CRUD)
 - [ ] Telegram Bot Token setup (you need to do this)
 - [ ] AI Horde account + API key (you need to do this)
 
 ### Phase 1 – Core Chat (Week 1)
 - [ ] Grok integration for roleplay
 - [ ] Character system (JSON-based)
-- [ ] Conversation memory (short-term)
+- [ ] Conversation memory (using the new DB layer)
 - [ ] 18+ age gate on `/start`
 - [ ] Basic commands (`/start`, `/help`, `/characters`)
 
@@ -62,9 +63,9 @@ A Telegram bot that lets users:
 ### Phase 3 – Advanced Features (Week 3–4)
 - [ ] Multiple characters + selection menu
 - [ ] User character creation flow
-- [ ] Persistent memory (SQLite)
-- [ ] Checkpoint / save & load system
-- [ ] Simple credit/energy system
+- [x] Persistent memory (SQLite) — foundation done
+- [x] Checkpoint / save & load system — foundation done
+- [x] Simple credit/energy system — foundation done
 - [ ] Better character consistency prompting
 
 ### Phase 4 – Polish (Week 5–6)
@@ -89,7 +90,12 @@ A Telegram bot that lets users:
 lucid-rp-telebot/
 ├── bot/
 │   ├── __init__.py
-│   └── main.py                 # Entry point (working basic bot)
+│   ├── main.py                 # Entry point (working basic bot)
+│   └── db/
+│       ├── __init__.py
+│       ├── database.py         # Full CRUD layer
+│       └── schema.sql          # SQLite schema
+├── data/                       # Created at runtime (lucid.db) — gitignored
 ├── docs/
 │   ├── ROADMAP.md
 │   ├── SETUP.md
@@ -99,6 +105,23 @@ lucid-rp-telebot/
 ├── requirements.txt
 └── README.md
 ```
+
+---
+
+## Database Layer (just added)
+
+The `bot/db/` package provides:
+
+| Table | Purpose |
+|-------|--------|
+| `users` | Telegram users, credits, active character, ban/admin flags |
+| `characters` | Character cards (built-in or user-created) |
+| `conversations` | One thread per (user + character) |
+| `messages` | Full conversation memory |
+| `checkpoints` | Named save points (`/save`, `/load`) |
+| `credit_transactions` | Audit log for the credit system |
+
+All access goes through `bot/db/database.py`. Call `init_db()` once on bot startup.
 
 ---
 
@@ -157,5 +180,5 @@ Open Telegram, find your bot, and send `/start`.
 
 ---
 
-**Status**: Phase 0 in progress – Basic bot is running  
+**Status**: Phase 0 – Basic bot + database layer ready  
 **Last Updated**: August 26, 2026
