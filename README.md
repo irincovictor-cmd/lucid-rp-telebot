@@ -25,7 +25,7 @@ A Telegram bot that lets users:
 
 | Component              | Tool                          | Notes |
 |------------------------|-------------------------------|-------|
-| Bot Framework          | `python-telegram-bot` or `aiogram` | Asynchronous, well-maintained |
+| Bot Framework          | `python-telegram-bot`         | Asynchronous, well-maintained |
 | Roleplay LLM           | Grok (xAI API)                | Strong uncensored roleplay capability |
 | Image Generation       | **AI Horde**                  | Completely free, NSFW-friendly, open source |
 | Database               | SQLite                        | Zero cost, easy to start |
@@ -39,10 +39,10 @@ A Telegram bot that lets users:
 
 ### Phase 0 – Project Setup (Days 1–2)
 - [x] Create GitHub repository
-- [ ] Project structure & virtual environment
-- [ ] Telegram Bot Token setup
-- [ ] AI Horde account + API key
-- [ ] Basic "Hello World" bot
+- [x] Project structure & virtual environment
+- [x] Basic "Hello World" bot (`/start`, `/help`)
+- [ ] Telegram Bot Token setup (you need to do this)
+- [ ] AI Horde account + API key (you need to do this)
 
 ### Phase 1 – Core Chat (Week 1)
 - [ ] Grok integration for roleplay
@@ -83,67 +83,79 @@ A Telegram bot that lets users:
 
 ---
 
-## Project Structure (Planned)
+## Current Project Structure
 
 ```
 lucid-rp-telebot/
 ├── bot/
 │   ├── __init__.py
-│   ├── main.py                 # Entry point
-│   ├── handlers/               # Command & message handlers
-│   ├── services/
-│   │   ├── llm.py              # Grok / roleplay logic
-│   │   ├── image.py            # AI Horde integration
-│   │   └── memory.py           # Conversation & character memory
-│   ├── models/                 # Database models
-│   └── utils/
-├── characters/                 # Default character cards (JSON)
-├── prompts/                    # System prompts & templates
-├── data/                       # SQLite database (gitignored)
+│   └── main.py                 # Entry point (working basic bot)
+├── docs/
+│   ├── ROADMAP.md
+│   ├── SETUP.md
+│   └── API_NOTES.md
 ├── .env.example
+├── .gitignore
 ├── requirements.txt
-├── README.md
-└── docs/
-    ├── ROADMAP.md
-    ├── SETUP.md
-    └── API_NOTES.md
+└── README.md
 ```
 
 ---
 
-## Getting Started (Coming Soon)
+## Getting Started (How to run the bot)
 
-Detailed setup instructions will be added in Phase 0.
+### 1. Clone the repository
+```bash
+git clone https://github.com/irincovictor-cmd/lucid-rp-telebot.git
+cd lucid-rp-telebot
+```
 
-For now:
-1. Clone this repository
-2. Create a virtual environment
-3. Install dependencies (once `requirements.txt` is ready)
-4. Copy `.env.example` → `.env` and fill in tokens
-5. Run the bot
+### 2. Create virtual environment
+```bash
+python -m venv venv
+
+# Windows
+venv\Scripts\activate
+
+# Linux / macOS
+source venv/bin/activate
+```
+
+### 3. Install dependencies
+```bash
+pip install -r requirements.txt
+```
+
+### 4. Create your .env file
+```bash
+cp .env.example .env
+```
+
+Then open `.env` and add your tokens:
+```env
+TELEGRAM_BOT_TOKEN=your_token_from_BotFather
+XAI_API_KEY=your_xai_key
+AI_HORDE_API_KEY=0000000000
+```
+
+### 5. Run the bot
+```bash
+python -m bot.main
+```
+
+You should see `Bot is starting...` in the terminal.  
+Open Telegram, find your bot, and send `/start`.
 
 ---
 
 ## Important Notes
 
-- **Zero Budget**: All current tools are free. Paid upgrades (better image providers, paid hosting, etc.) are optional later.
-- **NSFW Content**: This bot is designed for adult roleplay and image generation. Use responsibly and only with consenting adult users.
-- **AI Horde**: Free community service. Be respectful of workers — avoid spamming high-volume requests.
-- **Legal**: You are responsible for complying with Telegram’s Terms of Service and local laws regarding adult content.
+- **Zero Budget**: All current tools are free. Paid upgrades are optional later.
+- **NSFW Content**: This bot is designed for adult roleplay and image generation.
+- **AI Horde**: Free community service. Be respectful of workers.
+- **Legal**: You are responsible for complying with Telegram’s Terms of Service and local laws.
 
 ---
 
-## Contributing / Development
-
-This is currently a personal side project. Development is driven by the repository owner with AI assistance (Grok).
-
----
-
-## License
-
-TBD (will be decided later — likely MIT or similar for the code)
-
----
-
-**Status**: Early development – Documentation phase  
+**Status**: Phase 0 in progress – Basic bot is running  
 **Last Updated**: August 26, 2026
