@@ -6,6 +6,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from bot.db import database as db
+from bot.services import llm
 
 # Load environment variables
 load_dotenv()
@@ -31,10 +32,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"Hey {user.first_name} 👋\n\n"
         "Welcome to **Lucid RP Telebot** — an 18+ AI roleplay bot.\n\n"
         "⚠️ This bot is for adults only (18+).\n\n"
+        "Just send me a message and I\'ll roleplay with you.\n\n"
         "Commands:\n"
         "/start - Show this message\n"
-        "/help - How to use the bot\n\n"
-        "More features coming soon (characters, image generation, etc.)."
+        "/help - How to use the bot"
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
@@ -43,22 +44,20 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     """Send a message when the command /help is issued."""
     help_text = (
         "**How to use Lucid RP Telebot**\n\n"
-        "Right now the bot is in early development.\n\n"
+        "Just send any message and I will reply in character.\n\n"
         "Coming soon:\n"
-        "• AI roleplay with custom characters\n"
+        "• Multiple characters + selection\n"
         "• NSFW image generation\n"
         "• Character creation\n"
-        "• Conversation memory\n\n"
-        "Stay tuned!"
+        "• Save / load checkpoints\n"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
 
 def _get_or_create_default_character() -> int:
     """
-    Temporary stand-in until the real character-selection flow (Phase 3) exists.
-    Ensures there's at least one built-in character row so conversations/messages
-    have somewhere to attach to.
+    Temporary stand-in until the real character-selection flow exists.
+    Ensures there is at least one built-in character so conversations can attach to it.
     """
     conn = db.get_conn()
     row = conn.execute(
@@ -68,31 +67,72 @@ def _get_or_create_default_character() -> int:
         return row["character_id"]
     return db.create_character(
         owner_id=None,
-        name="Default",
-        short_desc="Placeholder character until character selection is built.",
-        profile={},
+        name="Aria",
+        short_desc="A warm, slightly playful companion who loves deep conversation and immersive roleplay.",
+        profile={
+            "name": "Aria",
+            "personality": "Warm, curious, slightly playful and flirty when the mood allows. Enjoys immersive roleplay and emotional connection.",
+            "tone": "Natural, expressive, never robotic",
+        },
         is_public=True,
     )
 
 
-async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Persist the incoming message to conversation memory (proves storage works).
-    Does NOT call any LLM yet — that integration is a separate, later step.
-    """
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Save the user message, call Grok, save the reply, and send it."""
     user = update.effective_user
+    text = update.message.text or ""
+
+    if not text.strip():
+        return
+
+    # Ensure user exists
     db.upsert_user(user.id, user.username, user.first_name)
 
+    # Get or create default character + conversation
     character_id = _get_or_create_default_character()
     conversation_id = db.get_or_create_conversation(user.id, character_id)
-    db.add_message(conversation_id, "user", update.message.text)
 
-    history_len = len(db.get_recent_messages(conversation_id, limit=100))
+    # Save user message
+    db.add_message(conversation_id, "user", text)
 
-    await update.message.reply_text(
-        f"Saved to memory ({history_len} messages in this conversation so far).\n\n"
-        "Roleplay AI is not connected yet. Coming in the next update!"
+    # Load recent history for context
+    history = db.get_recent_messages(conversation_id, limit=20)
+
+    # Build a simple character profile string from the DB row
+    character = db.get_character(character_id)
+    profile_text = "A warm, slightly playful companion who enjoys deep conversation and roleplay."
+    if character and character.get("profile_json"):
+        import json
+        try:
+            profile = json.loads(character["profile_json"]) if isinstance(character["profile_json"], str) else character["profile_json"]
+            parts = []
+            if profile.get("name"):
+                parts.append(f"Name: {profile['name']}")
+            if profile.get("personality"):
+                parts.append(f"Personality: {profile['personality']}")
+            if profile.get("tone"):
+                parts.append(f"Tone: {profile['tone']}")
+            if parts:
+                profile_text = "\n".join(parts)
+        except Exception:
+            pass
+
+    # Show typing indicator while waiting for Grok
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+
+    # Generate reply
+    reply = await llm.generate_reply(
+        user_message=text,
+        history=history[:-1],  # history already includes the latest user message; avoid duplicating it
+        character_profile=profile_text,
     )
+
+    # Save assistant reply
+    db.add_message(conversation_id, "assistant", reply)
+
+    # Send to user
+    await update.message.reply_text(reply)
 
 
 def main() -> None:
@@ -109,7 +149,7 @@ def main() -> None:
     # Register handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     # Run the bot until the user presses Ctrl-C
     logger.info("Bot is starting...")
