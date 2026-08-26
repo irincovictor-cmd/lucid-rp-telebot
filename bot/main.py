@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 
@@ -69,7 +70,7 @@ def _get_or_create_default_character() -> int:
         owner_id=None,
         name="Aria",
         short_desc="A warm, slightly playful companion who loves deep conversation and immersive roleplay.",
-        profile={
+        profile_json={
             "name": "Aria",
             "personality": "Warm, curious, slightly playful and flirty when the mood allows. Enjoys immersive roleplay and emotional connection.",
             "tone": "Natural, expressive, never robotic",
@@ -103,9 +104,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     character = db.get_character(character_id)
     profile_text = "A warm, slightly playful companion who enjoys deep conversation and roleplay."
     if character and character.get("profile_json"):
-        import json
         try:
-            profile = json.loads(character["profile_json"]) if isinstance(character["profile_json"], str) else character["profile_json"]
+            profile = (
+                json.loads(character["profile_json"])
+                if isinstance(character["profile_json"], str)
+                else character["profile_json"]
+            )
             parts = []
             if profile.get("name"):
                 parts.append(f"Name: {profile['name']}")
@@ -124,7 +128,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Generate reply
     reply = await llm.generate_reply(
         user_message=text,
-        history=history[:-1],  # history already includes the latest user message; avoid duplicating it
+        history=history[:-1],  # history already includes the latest user message
         character_profile=profile_text,
     )
 
