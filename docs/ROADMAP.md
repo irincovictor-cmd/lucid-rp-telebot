@@ -11,16 +11,17 @@
 **Goal**: Clean project foundation ready for development.
 
 - [x] Create GitHub repository
-- [ ] Initialize proper project structure
-- [ ] Create `requirements.txt` with initial dependencies
-- [ ] Create `.env.example`
-- [ ] Set up virtual environment instructions
-- [ ] Create Telegram bot via @BotFather and obtain token
-- [ ] Register on [AI Horde](https://aihorde.net) and get personal API key
-- [ ] Write and test a minimal "echo" or "hello" bot
-- [ ] Add basic `.gitignore`
+- [x] Initialize proper project structure
+- [x] Create `requirements.txt` with initial dependencies
+- [x] Create `.env.example`
+- [x] Set up virtual environment instructions
+- [x] Write and test a minimal "hello" bot (`/start`, `/help`)
+- [x] Add basic `.gitignore`
+- [x] **Database layer** (schema + full CRUD)
+- [ ] Create Telegram bot via @BotFather and obtain token (user action)
+- [ ] Register on [AI Horde](https://aihorde.net) and get personal API key (user action)
 
-**Deliverable**: Bot that starts and replies to `/start`
+**Deliverable**: Bot that starts and replies to `/start` + database ready
 
 ---
 
@@ -31,7 +32,7 @@
 - [ ] Integrate Grok (xAI API) for chat completions
 - [ ] Design flexible character card format (JSON)
 - [ ] Create 2–3 default characters
-- [ ] Implement short-term conversation memory
+- [ ] Wire conversation memory to the new DB layer
 - [ ] Add 18+ confirmation gate
 - [ ] Commands: `/start`, `/help`, `/new`, `/characters`
 - [ ] System prompt engineering for consistent roleplay style
@@ -60,12 +61,13 @@
 
 **Goal**: Real multi-character experience with memory.
 
-- [ ] SQLite database setup
-- [ ] User profiles & energy/credit system (even if unlimited for now)
+- [x] SQLite database setup (schema + access layer done)
+- [x] User profiles & energy/credit system (foundation done)
 - [ ] Multiple character support + selection menu (Telegram InlineKeyboard)
 - [ ] User-created characters (guided creation flow)
-- [ ] Long-term memory per character
-- [ ] Checkpoint system (`/save`, `/load`, `/checkpoints`)
+- [ ] Long-term memory per character (using DB)
+- [x] Checkpoint system foundation (`create_checkpoint`, `load_checkpoint_messages`)
+- [ ] Wire `/save`, `/load`, `/checkpoints` commands
 - [ ] Character appearance description stored for better image consistency
 
 **Deliverable**: Users can switch characters, create their own, and save progress
