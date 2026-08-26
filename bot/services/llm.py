@@ -14,23 +14,28 @@ from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
 
-XAI_API_KEY = os.getenv("XAI_API_KEY")
-XAI_MODEL = os.getenv("XAI_MODEL", "grok-4.6")
-
-# OpenAI-compatible client pointed at xAI
+# Client is created lazily so that load_dotenv() has time to run first
 _client: AsyncOpenAI | None = None
 
 
 def _get_client() -> AsyncOpenAI:
     global _client
     if _client is None:
-        if not XAI_API_KEY:
-            raise ValueError("XAI_API_KEY is not set in .env")
+        api_key = os.getenv("XAI_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "XAI_API_KEY is not set in .env. "
+                "Make sure the .env file exists in the project root and contains XAI_API_KEY=..."
+            )
         _client = AsyncOpenAI(
-            api_key=XAI_API_KEY,
+            api_key=api_key,
             base_url="https://api.x.ai/v1",
         )
     return _client
+
+
+def _get_model() -> str:
+    return os.getenv("XAI_MODEL", "grok-4.6")
 
 
 DEFAULT_SYSTEM_PROMPT = """You are an immersive roleplay AI companion inside a Telegram bot called Lucid RP Telebot.
@@ -66,6 +71,7 @@ async def generate_reply(
         The assistant's reply text.
     """
     client = _get_client()
+    model = _get_model()
 
     if system_prompt is None:
         system_prompt = DEFAULT_SYSTEM_PROMPT.format(character_profile=character_profile)
@@ -85,7 +91,7 @@ async def generate_reply(
 
     try:
         response = await client.chat.completions.create(
-            model=XAI_MODEL,
+            model=model,
             messages=messages,
             temperature=0.9,
             max_tokens=1024,
