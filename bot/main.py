@@ -5,6 +5,8 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
+from bot.db import database as db
+
 # Load environment variables
 load_dotenv()
 
@@ -21,6 +23,10 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /start is issued."""
     user = update.effective_user
+
+    # Create/refresh the user's row so credits, memory, etc. have somewhere to live.
+    db.upsert_user(user.id, user.username, user.first_name)
+
     welcome_text = (
         f"Hey {user.first_name} 👋\n\n"
         "Welcome to **Lucid RP Telebot** — an 18+ AI roleplay bot.\n\n"
@@ -48,10 +54,43 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
 
+def _get_or_create_default_character() -> int:
+    """
+    Temporary stand-in until the real character-selection flow (Phase 3) exists.
+    Ensures there's at least one built-in character row so conversations/messages
+    have somewhere to attach to.
+    """
+    conn = db.get_conn()
+    row = conn.execute(
+        "SELECT character_id FROM characters WHERE owner_id IS NULL LIMIT 1"
+    ).fetchone()
+    if row:
+        return row["character_id"]
+    return db.create_character(
+        owner_id=None,
+        name="Default",
+        short_desc="Placeholder character until character selection is built.",
+        profile={},
+        is_public=True,
+    )
+
+
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Echo the user message (temporary for testing)."""
+    """
+    Persist the incoming message to conversation memory (proves storage works).
+    Does NOT call any LLM yet — that integration is a separate, later step.
+    """
+    user = update.effective_user
+    db.upsert_user(user.id, user.username, user.first_name)
+
+    character_id = _get_or_create_default_character()
+    conversation_id = db.get_or_create_conversation(user.id, character_id)
+    db.add_message(conversation_id, "user", update.message.text)
+
+    history_len = len(db.get_recent_messages(conversation_id, limit=100))
+
     await update.message.reply_text(
-        f"I received: {update.message.text}\n\n"
+        f"Saved to memory ({history_len} messages in this conversation so far).\n\n"
         "Roleplay AI is not connected yet. Coming in the next update!"
     )
 
@@ -60,6 +99,9 @@ def main() -> None:
     """Start the bot."""
     if not TELEGRAM_BOT_TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN is not set in .env file")
+
+    # Set up the database (creates tables on first run, no-op after that)
+    db.init_db()
 
     # Create the Application
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
