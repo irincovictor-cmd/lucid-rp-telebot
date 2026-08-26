@@ -1,16 +1,16 @@
-import json
 import logging
 import os
 
 from dotenv import load_dotenv
+
+# Load .env as early as possible, before any module reads environment variables
+load_dotenv()
+
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from bot.db import database as db
 from bot.services import llm
-
-# Load environment variables
-load_dotenv()
 
 # Enable logging
 logging.basicConfig(
@@ -105,6 +105,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     profile_text = "A warm, slightly playful companion who enjoys deep conversation and roleplay."
     if character and character.get("profile_json"):
         try:
+            import json
             profile = (
                 json.loads(character["profile_json"])
                 if isinstance(character["profile_json"], str)
