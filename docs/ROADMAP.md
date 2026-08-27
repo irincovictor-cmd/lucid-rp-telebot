@@ -2,119 +2,104 @@
 
 **Project**: Lucid RP Telebot  
 **Budget**: $0 (free tools only)  
-**Estimated Timeline**: 4–8 weeks
+**Last Updated**: August 27, 2026
 
 ---
 
-## Phase 0 – Foundation (Days 1–2)
+## Phase 0 – Foundation
 
 **Goal**: Clean project foundation ready for development.
 
 - [x] Create GitHub repository
-- [x] Initialize proper project structure
-- [x] Create `requirements.txt` with initial dependencies
-- [x] Create `.env.example`
-- [x] Set up virtual environment instructions
-- [x] Write and test a minimal "hello" bot (`/start`, `/help`)
-- [x] Add basic `.gitignore`
-- [x] **Database layer** (schema + full CRUD)
-- [ ] Create Telegram bot via @BotFather and obtain token (user action)
-- [ ] Register on [AI Horde](https://aihorde.net) and get personal API key (user action)
+- [x] Project structure
+- [x] `requirements.txt` + `.env.example`
+- [x] Basic bot (`/start`, `/help`)
+- [x] Database layer (schema + full CRUD)
+- [x] Telegram Bot Token setup
+- [x] AI Horde account + API key
 
-**Deliverable**: Bot that starts and replies to `/start` + database ready
+**Deliverable**: Bot starts and replies to `/start` + database ready
 
 ---
 
-## Phase 1 – Core Roleplay Engine (Week 1)
+## Phase 1 – Core Roleplay Engine
 
-**Goal**: Users can have basic AI roleplay conversations.
+**Goal**: Users can have AI roleplay conversations.
 
-- [ ] Integrate Grok (xAI API) for chat completions
-- [ ] Design flexible character card format (JSON)
-- [ ] Create 2–3 default characters
-- [ ] Wire conversation memory to the new DB layer
-- [ ] Add 18+ confirmation gate
-- [ ] Commands: `/start`, `/help`, `/new`, `/characters`
-- [ ] System prompt engineering for consistent roleplay style
+- [x] LLM integration (originally xAI/Grok → switched to **AI Horde text** for free)
+- [x] Conversation memory (SQLite)
+- [x] Default character (Aria)
+- [x] `/new` command to clear memory
+- [x] Prompt tuning: shorter replies, no invented history, follow user lead
+- [ ] Stronger / multiple character cards
+- [ ] 18+ confirmation gate
+- [ ] Further consistency improvements (ongoing)
 
-**Deliverable**: Working roleplay chat with at least one character
+**Deliverable**: Working roleplay chat (quality limited by free Horde workers)
+
+**Known limitation**: Free AI Horde text models vary a lot. Some replies are good; others leak instructions or become incoherent. Improving prompts helps but does not fully fix weak workers.
 
 ---
 
-## Phase 2 – Image Generation (Week 2)
+## Phase 2 – Image Generation
 
 **Goal**: Users can generate NSFW images related to the roleplay.
 
-- [ ] Full AI Horde async API integration
-- [ ] Support for positive + negative prompts
-- [ ] LLM-powered prompt rewriting (user request → strong image prompt)
-- [ ] Natural language triggers ("show me...", "generate a scene of...") + `/img` command
-- [ ] Status updates while waiting for generation
-- [ ] Error handling for timeouts / failed generations
-- [ ] Basic model selection (recommend good NSFW models on Horde)
+- [ ] AI Horde image API integration
+- [ ] `/img` command and/or natural language triggers
+- [ ] Build image prompt from scene + character
+- [ ] Negative prompt support
+- [ ] Send images to Telegram
+- [ ] Status messages while waiting
 
 **Deliverable**: Bot can generate and send images from roleplay context
 
 ---
 
-## Phase 3 – Persistence & Character System (Weeks 3–4)
+## Phase 3 – Characters & Persistence
 
-**Goal**: Real multi-character experience with memory.
+**Goal**: Multi-character experience with save/load.
 
-- [x] SQLite database setup (schema + access layer done)
-- [x] User profiles & energy/credit system (foundation done)
-- [ ] Multiple character support + selection menu (Telegram InlineKeyboard)
-- [ ] User-created characters (guided creation flow)
-- [ ] Long-term memory per character (using DB)
-- [x] Checkpoint system foundation (`create_checkpoint`, `load_checkpoint_messages`)
-- [ ] Wire `/save`, `/load`, `/checkpoints` commands
-- [ ] Character appearance description stored for better image consistency
+- [x] SQLite database setup
+- [x] Users + credits foundation
+- [x] Checkpoint tables + helpers
+- [ ] Character selection menu (InlineKeyboard)
+- [ ] User-created characters
+- [ ] Wire `/save`, `/load`, `/checkpoints`
+- [ ] Character appearance fields for better image consistency
 
-**Deliverable**: Users can switch characters, create their own, and save progress
-
----
-
-## Phase 4 – Quality & Polish (Weeks 5–6)
-
-**Goal**: Make it feel production-ready and pleasant to use.
-
-- [ ] Robust error handling everywhere
-- [ ] Rate limiting (per user)
-- [ ] Logging (file + console)
-- [ ] Admin-only commands
-- [ ] Improved Telegram UX (menus, buttons, formatting)
-- [ ] Better default prompts and negative prompts
-- [ ] Character consistency improvements for images
-- [ ] Code cleanup and comments
-
-**Deliverable**: Stable, user-friendly bot
+**Deliverable**: Switch characters, create own, save progress
 
 ---
 
-## Phase 5 – Deployment & Soft Launch (Weeks 7–8)
+## Phase 4 – Polish
 
-**Goal**: Bot is online and testable by others.
-
-- [ ] Choose and configure free hosting (Railway / Render / Fly.io / VPS)
-- [ ] Environment variable management
-- [ ] Private testing with trusted users
-- [ ] Collect feedback and fix issues
-- [ ] Optional: Add fallback image provider
-- [ ] Write final user-facing documentation
-
-**Deliverable**: Public or private working bot online 24/7
+- [ ] Robust error handling
+- [ ] Rate limiting
+- [ ] Logging
+- [ ] Admin commands
+- [ ] Better Telegram UI
+- [ ] Prompt / model selection improvements
 
 ---
 
-## Future Ideas (Post-MVP)
+## Phase 5 – Deployment
 
-- Image-to-image / reference images for better character consistency
-- Multiple image styles (anime / realistic toggle)
-- Voice messages (optional)
-- Group chat support
-- Web dashboard for character management
-- Paid premium tier later (if desired)
+- [ ] Free hosting (Railway / Render / Fly.io / etc.)
+- [ ] Private beta
+- [ ] Bug fixes from real use
 
 ---
 
-**Last Updated**: August 26, 2026
+## Notes on AI providers
+
+| Provider | Role | Status |
+|----------|------|--------|
+| AI Horde text | Roleplay replies | **Live** (free, variable quality) |
+| AI Horde image | Scene / character images | Planned |
+| xAI / Grok | Previously tried for RP | Dropped (paid) |
+| OpenRouter / Ollama | Possible future alternatives | Not integrated |
+
+---
+
+**Current focus**: Improve chat consistency where possible, then Phase 2 (images).
