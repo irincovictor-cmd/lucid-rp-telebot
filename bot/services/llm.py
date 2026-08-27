@@ -17,7 +17,6 @@ import httpx
 logger = logging.getLogger(__name__)
 
 HORDE_API_BASE = "https://aihorde.net/api/v2"
-HORDE_API_KEY = os.getenv("AI_HORDE_API_KEY", "0000000000")
 CLIENT_AGENT = "LucidRPTelebot:1.0:https://github.com/irincovictor-cmd/lucid-rp-telebot"
 
 # How long to wait for a generation (seconds)
@@ -35,6 +34,10 @@ Do not break character or mention that you are an AI unless the user explicitly 
 Character:
 {character_profile}
 """
+
+
+def _get_api_key() -> str:
+    return os.getenv("AI_HORDE_API_KEY", "0000000000")
 
 
 def _build_prompt(
@@ -87,14 +90,14 @@ async def generate_reply(
     payload = {
         "prompt": prompt,
         "params": {
-            "max_length": 300,          # tokens to generate
+            "max_length": 300,
             "max_context_length": 2048,
             "temperature": 0.85,
             "top_p": 0.9,
             "rep_pen": 1.1,
             "stop_sequence": ["User:", "\nUser:", "\nUser "],
         },
-        "models": [],                  # empty = any available model
+        "models": [],
         "trusted_workers": False,
         "slow_workers": True,
         "nsfw": True,
@@ -102,7 +105,7 @@ async def generate_reply(
     }
 
     headers = {
-        "apikey": HORDE_API_KEY,
+        "apikey": _get_api_key(),
         "Client-Agent": CLIENT_AGENT,
         "Content-Type": "application/json",
     }
@@ -144,11 +147,10 @@ async def generate_reply(
 
                 status = status_resp.json()
                 if status.get("done"):
-                    generations = status.get("generations') or status.get("generations") or []
+                    generations = status.get("generations") or []
                     if generations:
                         text = (generations[0].get("text") or "").strip()
                         if text:
-                            # Clean common trailing artifacts
                             for stop in ("User:", "\nUser"):
                                 if stop in text:
                                     text = text.split(stop)[0].strip()
