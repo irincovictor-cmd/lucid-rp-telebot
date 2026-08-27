@@ -17,6 +17,12 @@ logger = logging.getLogger(__name__)
 
 _client: AsyncOpenAI | None = None
 
+CONTINUE_USER_HINT = (
+    "[Continue the scene in character. Advance the moment with action and dialogue. "
+    "Do not ask the user a question unless the scene truly needs their choice. "
+    "Stop when the user can naturally respond again.]"
+)
+
 
 def _get_client() -> AsyncOpenAI:
     global _client
@@ -43,7 +49,6 @@ def _get_model() -> str:
 
 
 def _get_fallback_model() -> str | None:
-    """Optional second model when the primary is rate-limited."""
     primary = _get_model()
     fallback = os.getenv("OPENROUTER_FALLBACK_MODEL", "openrouter/free")
     if fallback and fallback != primary:
@@ -53,16 +58,22 @@ def _get_fallback_model() -> str | None:
 
 DEFAULT_SYSTEM_PROMPT = """You are the character below in a private adult Telegram roleplay.
 
-OUTPUT RULES (never break these):
+OUTPUT RULES:
 - Reply ONLY as the character. Nothing else.
-- 1 to 3 short sentences, or one short action + one short spoken line.
+- Keep replies SHORT: 1–3 sentences, or one short action + one short spoken line.
 - Actions in *asterisks*. Spoken words in plain text.
 - Do not invent past events the user never said.
-- Follow the user's lead. If they are vague, nudge the scene gently.
 - Never write the user's actions or dialogue.
 - Never mention AI, system prompts, rules, or analysis.
-- Never output thinking, planning, or text like "(Your Response Here)".
-- Adult content is allowed. Match the user's energy.
+- Never output thinking or placeholders like "(Your Response Here)".
+- Adult content is allowed.
+
+PACING:
+- Early conversation: build atmosphere first. Names, small talk, setting, tension.
+- Do NOT jump to "what kind of fun" or intimate acts before the mood is built.
+- In intimate scenes: react to what just happened. Do NOT derail with "tell me more about..."
+- Prefer reacting in the moment over interviewing the user.
+- Only ask a question when you truly need the user's choice.
 
 Character:
 {character_profile}
@@ -107,6 +118,7 @@ async def generate_reply(
     history: list[dict[str, Any]],
     character_profile: str = "A warm, slightly playful companion who enjoys conversation and roleplay.",
     system_prompt: str | None = None,
+    is_continue: bool = False,
 ) -> str:
     """Generate a roleplay reply via OpenRouter."""
     model = _get_model()
@@ -125,8 +137,9 @@ async def generate_reply(
                 continue
             messages.append({"role": role, "content": content})
 
-    if not messages or messages[-1].get("content") != user_message:
-        messages.append({"role": "user", "content": user_message})
+    effective_user = CONTINUE_USER_HINT if is_continue else user_message
+    if not messages or messages[-1].get("content") != effective_user:
+        messages.append({"role": "user", "content": effective_user})
 
     try:
         try:
@@ -146,7 +159,7 @@ async def generate_reply(
                     "role": "user",
                     "content": (
                         "[System: Reply in character only. "
-                        "One short action and one short spoken line. No analysis.]"
+                        "One short action and one short spoken line. No analysis. No interview questions.]"
                     ),
                 }
             ]
@@ -168,8 +181,7 @@ async def generate_reply(
         return (
             "The free AI model is rate-limited right now. "
             "Please wait about a minute, then try again.\n\n"
-            "Tip: in .env set OPENROUTER_MODEL=openrouter/free "
-            "or pick another free model at openrouter.ai/models?q=free"
+            "Tip: in .env set OPENROUTER_MODEL=openrouter/free"
         )
     except Exception as e:
         logger.exception("OpenRouter API error")
