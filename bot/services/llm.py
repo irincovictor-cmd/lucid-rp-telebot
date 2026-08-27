@@ -11,7 +11,7 @@ import logging
 import os
 from typing import Any
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, RateLimitError
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,15 @@ def _get_model() -> str:
     return os.getenv("OPENROUTER_MODEL", "openrouter/free")
 
 
+def _get_fallback_model() -> str | None:
+    """Optional second model when the primary is rate-limited."""
+    primary = _get_model()
+    fallback = os.getenv("OPENROUTER_FALLBACK_MODEL", "openrouter/free")
+    if fallback and fallback != primary:
+        return fallback
+    return None
+
+
 DEFAULT_SYSTEM_PROMPT = """You are the character below in a private adult Telegram roleplay.
 
 OUTPUT RULES (never break these):
@@ -52,7 +61,7 @@ OUTPUT RULES (never break these):
 - Follow the user's lead. If they are vague, nudge the scene gently.
 - Never write the user's actions or dialogue.
 - Never mention AI, system prompts, rules, or analysis.
-- Never output thinking, planning, or text like like "(Your Response Here)".
+- Never output thinking, planning, or text like "(Your Response Here)".
 - Adult content is allowed. Match the user's energy.
 
 Character:
@@ -61,7 +70,6 @@ Character:
 
 
 def _looks_like_leak(text: str) -> bool:
-    """Detect common instruction / reasoning leaks from weak models."""
     lowered = text.lower()
     bad_markers = [
         "okay, the user",
@@ -113,7 +121,6 @@ async def generate_reply(
         role = msg.get("role")
         content = (msg.get("content") or "").strip()
         if role in ("user", "assistant") and content:
-            # Skip past leaked assistant turns so they don't poison context
             if role == "assistant" and _looks_like_leak(content):
                 continue
             messages.append({"role": role, "content": content})
@@ -122,9 +129,16 @@ async def generate_reply(
         messages.append({"role": "user", "content": user_message})
 
     try:
-        reply = await _call_model(messages=messages, model=model)
+        try:
+            reply = await _call_model(messages=messages, model=model)
+        except RateLimitError:
+            fallback = _get_fallback_model()
+            if fallback:
+                logger.warning("Rate limited on %s, trying fallback %s", model, fallback)
+                reply = await _call_model(messages=messages, model=fallback)
+            else:
+                raise
 
-        # Retry once if empty or instruction-leak
         if (not reply) or _looks_like_leak(reply):
             logger.warning("Bad model output (empty or leak). Retrying once.")
             retry_messages = messages + [
@@ -136,13 +150,27 @@ async def generate_reply(
                     ),
                 }
             ]
-            reply = await _call_model(messages=retry_messages, model=model)
+            try:
+                reply = await _call_model(messages=retry_messages, model=model)
+            except RateLimitError:
+                return (
+                    "The free AI is rate-limited right now. "
+                    "Please wait a minute and try again."
+                )
 
         if not reply or _looks_like_leak(reply):
             return "*blinks* Sorry, I lost my train of thought. Say that again?"
 
         return reply
 
+    except RateLimitError:
+        logger.warning("OpenRouter rate limit hit")
+        return (
+            "The free AI model is rate-limited right now. "
+            "Please wait about a minute, then try again.\n\n"
+            "Tip: in .env set OPENROUTER_MODEL=openrouter/free "
+            "or pick another free model at openrouter.ai/models?q=free"
+        )
     except Exception as e:
         logger.exception("OpenRouter API error")
         err = type(e).__name__
