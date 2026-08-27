@@ -26,76 +26,92 @@ A Telegram bot that lets users:
 | Component              | Tool                          | Notes |
 |------------------------|-------------------------------|-------|
 | Bot Framework          | `python-telegram-bot`         | Asynchronous, well-maintained |
-| Roleplay LLM           | Grok (xAI API)                | Strong uncensored roleplay capability |
-| Image Generation       | **AI Horde**                  | Completely free, NSFW-friendly, open source |
-| Database               | SQLite                        | Zero cost, easy to start |
-| Hosting                | Local / Railway / Render / Fly.io free tier | Start local |
+| Roleplay LLM           | **AI Horde (text)**           | Free community workers, NSFW-friendly |
+| Image Generation       | **AI Horde (image)**          | Planned — same API key |
+| Database               | SQLite                        | Zero cost |
+| Hosting                | Local / free tier later       | Start local |
 | Version Control        | GitHub                        | This repository |
 | Language               | Python 3.11+                  | |
 
 ---
 
-## Features Roadmap
+## Current Status (Updated Aug 27, 2026)
 
-### Phase 0 – Project Setup (Days 1–2)
-- [x] Create GitHub repository
-- [x] Project structure & virtual environment
-- [x] Basic "Hello World" bot (`/start`, `/help`)
-- [x] Database layer (schema + CRUD)
-- [ ] Telegram Bot Token setup (you need to do this)
-- [ ] AI Horde account + API key (you need to do this)
+### Working now
+- [x] Telegram bot (`/start`, `/help`, `/new`)
+- [x] SQLite database (users, characters, conversations, messages, checkpoints, credits)
+- [x] Conversation memory
+- [x] Roleplay replies via **AI Horde text generation**
+- [x] Default character (Aria)
+- [x] Shorter-reply + consistency prompt tuning
 
-### Phase 1 – Core Chat (Week 1)
-- [ ] Grok integration for roleplay
-- [ ] Character system (JSON-based)
-- [ ] Conversation memory (using the new DB layer)
-- [ ] 18+ age gate on `/start`
-- [ ] Basic commands (`/start`, `/help`, `/characters`)
-
-### Phase 2 – Image Generation (Week 2)
-- [ ] AI Horde API integration
-- [ ] Image generation command / natural language trigger
-- [ ] Prompt rewriting by LLM
-- [ ] Negative prompt support
-- [ ] Send images back to Telegram
-- [ ] Queue status messages
-
-### Phase 3 – Advanced Features (Week 3–4)
-- [ ] Multiple characters + selection menu
-- [ ] User character creation flow
-- [x] Persistent memory (SQLite) — foundation done
-- [x] Checkpoint / save & load system — foundation done
-- [x] Simple credit/energy system — foundation done
-- [ ] Better character consistency prompting
-
-### Phase 4 – Polish (Week 5–6)
-- [ ] Improved error handling
-- [ ] Rate limiting & anti-spam
-- [ ] Logging system
-- [ ] Admin commands
-- [ ] Better Telegram UI (buttons, menus)
-- [ ] Documentation improvements
-
-### Phase 5 – Deployment & Testing (Week 7–8)
-- [ ] Deploy to free hosting
-- [ ] Private beta testing
-- [ ] Bug fixes & feedback loop
-- [ ] Optional second image provider as fallback
+### Not working yet
+- [ ] Image generation
+- [ ] Multiple characters / selection menu
+- [ ] User-created characters
+- [ ] Checkpoint commands wired to chat (`/save`, `/load`)
+- [ ] Age gate, rate limits, admin tools
 
 ---
 
-## Current Project Structure
+## Features Roadmap
+
+### Phase 0 – Project Setup
+- [x] Create GitHub repository
+- [x] Project structure
+- [x] Basic bot (`/start`, `/help`)
+- [x] Database layer (schema + CRUD)
+- [x] Telegram Bot Token + AI Horde key setup
+
+### Phase 1 – Core Chat
+- [x] LLM integration (switched from paid xAI → free AI Horde text)
+- [x] Conversation memory (DB-backed)
+- [x] Default character
+- [x] `/new` to clear memory
+- [x] Prompt tuning for shorter, more consistent replies
+- [ ] Stronger character system
+- [ ] 18+ age gate
+
+### Phase 2 – Image Generation
+- [ ] AI Horde image API integration
+- [ ] `/img` or natural-language image requests
+- [ ] Prompt rewriting from scene context
+- [ ] Send images back to Telegram
+- [ ] Queue / waiting messages
+
+### Phase 3 – Characters & Persistence
+- [ ] Multiple characters + selection menu
+- [ ] User character creation
+- [x] Persistent memory foundation
+- [x] Checkpoint foundation (DB ready)
+- [ ] Wire `/save`, `/load`, `/checkpoints`
+
+### Phase 4 – Polish
+- [ ] Error handling & rate limiting
+- [ ] Better Telegram UI (buttons)
+- [ ] Logging / admin commands
+
+### Phase 5 – Deploy
+- [ ] Free hosting
+- [ ] Private testing
+
+---
+
+## Project Structure
 
 ```
 lucid-rp-telebot/
 ├── bot/
 │   ├── __init__.py
-│   ├── main.py                 # Entry point (working basic bot)
-│   └── db/
+│   ├── main.py              # Entry point + handlers
+│   ├── db/
+│   │   ├── __init__.py
+│   │   ├── database.py       # CRUD layer
+│   │   └── schema.sql        # SQLite schema
+│   └── services/
 │       ├── __init__.py
-│       ├── database.py         # Full CRUD layer
-│       └── schema.sql          # SQLite schema
-├── data/                       # Created at runtime (lucid.db) — gitignored
+│       └── llm.py            # AI Horde text roleplay
+├── data/                     # lucid.db (gitignored)
 ├── docs/
 │   ├── ROADMAP.md
 │   ├── SETUP.md
@@ -103,82 +119,63 @@ lucid-rp-telebot/
 ├── .env.example
 ├── .gitignore
 ├── requirements.txt
+├── CHANGES.md
 └── README.md
 ```
 
 ---
 
-## Database Layer (just added)
+## Getting Started
 
-The `bot/db/` package provides:
-
-| Table | Purpose |
-|-------|--------|
-| `users` | Telegram users, credits, active character, ban/admin flags |
-| `characters` | Character cards (built-in or user-created) |
-| `conversations` | One thread per (user + character) |
-| `messages` | Full conversation memory |
-| `checkpoints` | Named save points (`/save`, `/load`) |
-| `credit_transactions` | Audit log for the credit system |
-
-All access goes through `bot/db/database.py`. Call `init_db()` once on bot startup.
-
----
-
-## Getting Started (How to run the bot)
-
-### 1. Clone the repository
 ```bash
 git clone https://github.com/irincovictor-cmd/lucid-rp-telebot.git
 cd lucid-rp-telebot
-```
-
-### 2. Create virtual environment
-```bash
 python -m venv venv
 
 # Windows
 venv\Scripts\activate
-
 # Linux / macOS
 source venv/bin/activate
-```
 
-### 3. Install dependencies
-```bash
 pip install -r requirements.txt
-```
-
-### 4. Create your .env file
-```bash
 cp .env.example .env
-```
-
-Then open `.env` and add your tokens:
-```env
-TELEGRAM_BOT_TOKEN=your_token_from_BotFather
-XAI_API_KEY=your_xai_key
-AI_HORDE_API_KEY=0000000000
-```
-
-### 5. Run the bot
-```bash
+# Edit .env with your tokens
 python -m bot.main
 ```
 
-You should see `Bot is starting...` in the terminal.  
-Open Telegram, find your bot, and send `/start`.
+Required in `.env`:
+```env
+TELEGRAM_BOT_TOKEN=...
+AI_HORDE_API_KEY=...          # same key for text + future images
+```
+
+Optional:
+```env
+XAI_API_KEY=...               # no longer used for roleplay
+XAI_MODEL=grok-4.6
+```
 
 ---
 
-## Important Notes
+## Commands
 
-- **Zero Budget**: All current tools are free. Paid upgrades are optional later.
-- **NSFW Content**: This bot is designed for adult roleplay and image generation.
-- **AI Horde**: Free community service. Be respectful of workers.
-- **Legal**: You are responsible for complying with Telegram’s Terms of Service and local laws.
+| Command | Description |
+|---------|-------------|
+| `/start` | Welcome message |
+| `/help`  | Help text |
+| `/new`   | Clear conversation memory and start fresh |
+
+Just send any normal message to roleplay.
 
 ---
 
-**Status**: Phase 0 – Basic bot + database layer ready  
-**Last Updated**: August 26, 2026
+## Notes
+
+- **Zero budget**: AI Horde is free (community workers). Quality and speed vary.
+- **NSFW**: Designed for adult roleplay. Use responsibly.
+- **AI Horde**: Be respectful of volunteer workers; avoid spam.
+
+---
+
+**Status**: Phase 1 in progress — roleplay via AI Horde is live; image gen next  
+**Last Updated**: August 27, 2026
