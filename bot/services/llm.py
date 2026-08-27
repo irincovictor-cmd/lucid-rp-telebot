@@ -92,9 +92,8 @@ async def generate_reply(
             model=model,
             messages=messages,
             temperature=0.85,
-            max_tokens("max_tokens", 250),
+            max_tokens=250,
         )
-        # fix below - can't use maxkwargs like that
         reply = (response.choices[0].message.content or "").strip()
         if not reply:
             return "(Empty reply from the model. Please try again.)"
