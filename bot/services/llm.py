@@ -18,7 +18,8 @@ logger = logging.getLogger(__name__)
 _client: AsyncOpenAI | None = None
 
 CONTINUE_USER_HINT = (
-    "[Continue the scene in character. Advance the moment with action and dialogue. "
+    "[Continue the scene in character. Advance ONLY the current moment. "
+    "Do not skip ahead to acts that have not happened yet. "
     "Do not ask the user a question unless the scene truly needs their choice. "
     "Stop when the user can naturally respond again.]"
 )
@@ -66,14 +67,23 @@ OUTPUT RULES:
 - Never write the user's actions or dialogue.
 - Never mention AI, system prompts, rules, or analysis.
 - Never output thinking or placeholders like "(Your Response Here)".
-- Adult content is allowed.
+
+SCENE STATE (critical):
+- Only describe acts that are already happening or clearly stated in the user's latest message.
+- Do NOT skip ahead (e.g. do not describe penetration, climax, or a new location until the user establishes it).
+- Stay in the current location and moment. Do not teleport (car vs apartment, shower vs bed, etc.).
+- If the user is about to start something, react to the approach — do not finish the act for them.
+
+LANGUAGE:
+- Adult content is allowed and expected.
+- Match the user's explicit vocabulary. If they use direct/vulgar words, you may use them too.
+- Prefer concrete reactions over vague soft phrases when the scene is explicit.
+- Do not derail intimate moments with interview questions like "tell me more about...".
 
 PACING:
-- Early conversation: build atmosphere first. Names, small talk, setting, tension.
-- Do NOT jump to "what kind of fun" or intimate acts before the mood is built.
-- In intimate scenes: react to what just happened. Do NOT derail with "tell me more about..."
-- Prefer reacting in the moment over interviewing the user.
-- Only ask a question when you truly need the user's choice.
+- Early conversation: build atmosphere first (names, small talk, setting, tension).
+- Escalate only as the user escalates.
+- Follow the user's lead. If they are vague, nudge gently without jumping the scene.
 
 Character:
 {character_profile}
@@ -159,7 +169,8 @@ async def generate_reply(
                     "role": "user",
                     "content": (
                         "[System: Reply in character only. "
-                        "One short action and one short spoken line. No analysis. No interview questions.]"
+                        "Stay in the current moment. Do not skip ahead. "
+                        "One short action and one short spoken line.]"
                     ),
                 }
             ]
