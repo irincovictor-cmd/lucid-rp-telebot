@@ -6,8 +6,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 from bot.db import database as db
 from bot.services import llm
@@ -24,6 +31,8 @@ BOT_WELCOME = (
     "💖 **HoneyChat / Lucid RP** — private 18+ AI roleplay\n\n"
     "Talk dirty or deep. Stay in a scene. Build whatever fantasy you want.\n\n"
     "⚠️ Adults only (18+).\n\n"
+    "Tip: use **Continue** under replies when the scene is still running "
+    "and you don't need to type yet.\n\n"
     "Commands:\n"
     "/start — welcome + meet Aria\n"
     "/help — how to use\n"
@@ -44,11 +53,16 @@ ARIA_SCENE_INTRO = (
 ARIA_PROFILE = (
     "Name: Aria\n"
     "Setting: Rooftop bar after midnight; city lights; intimate, low-key mood.\n"
-    "Personality: Warm, curious, slightly teasing and flirty when the mood allows. "
-    "Responsive to the user's energy. Can gently lead when the user is vague, "
-    "but follows clear user direction.\n"
-    "Tone: Short natural replies. Actions in *asterisks*. No invented shared history."
+    "Personality: Warm, curious, slightly teasing. Builds atmosphere before escalating. "
+    "Matches the user's pace. Does not invent past shared history.\n"
+    "Tone: Short natural replies. Actions in *asterisks*. Slow-burn early conversation."
 )
+
+
+def _continue_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("Continue ▶", callback_data="rp_continue")]]
+    )
 
 
 def _get_or_create_default_character() -> int:
@@ -66,10 +80,10 @@ def _get_or_create_default_character() -> int:
             "name": "Aria",
             "setting": "Rooftop bar after midnight",
             "personality": (
-                "Warm, curious, slightly teasing and flirty. "
-                "Matches the user's energy. Does not invent past shared history."
+                "Warm, curious, slightly teasing. Builds atmosphere before escalating. "
+                "Matches the user's pace. Does not invent past shared history."
             ),
-            "tone": "Short, natural replies. Actions in *asterisks*.",
+            "tone": "Short, natural replies. Actions in *asterisks*. Slow-burn early on.",
         },
         is_public=True,
     )
@@ -101,17 +115,18 @@ def _character_profile_text(character_id: int) -> str:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Welcome + Aria scene intro."""
     user = update.effective_user
     db.upsert_user(user.id, user.username, user.first_name)
 
     await update.message.reply_text(BOT_WELCOME, parse_mode="Markdown")
-    await update.message.reply_text(ARIA_SCENE_INTRO, parse_mode="Markdown")
+    await update.message.reply_text(
+        ARIA_SCENE_INTRO,
+        parse_mode="Markdown",
+        reply_markup=_continue_keyboard(),
+    )
 
-    # Seed conversation so the model knows the opening scene
     character_id = _get_or_create_default_character()
     conversation_id = db.get_or_create_conversation(user.id, character_id)
-    # Only seed if conversation is empty
     existing = db.get_recent_messages(conversation_id, limit=1)
     if not existing:
         db.add_message(conversation_id, "assistant", ARIA_SCENE_INTRO)
@@ -120,18 +135,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     help_text = (
         "**How to use**\n\n"
-        "Just reply to Aria and stay in the scene.\n\n"
+        "Reply to Aria and stay in the scene.\n"
+        "Press **Continue** under a message when the scene is still going "
+        "and you don't need to type yet.\n\n"
         "Commands:\n"
         "/start — bot welcome + Aria intro\n"
         "/help — this help\n"
-        "/new — clear memory and restart Aria's intro\n\n"
-        "Coming soon: more characters, image gen, checkpoints."
+        "/new — clear memory and restart Aria's intro"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
 
 async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Clear memory and re-send Aria intro."""
     user = update.effective_user
     db.upsert_user(user.id, user.username, user.first_name)
 
@@ -141,7 +156,11 @@ async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     db.add_message(conversation_id, "assistant", ARIA_SCENE_INTRO)
     await update.message.reply_text("Memory cleared. Starting fresh with Aria…")
-    await update.message.reply_text(ARIA_SCENE_INTRO, parse_mode="Markdown")
+    await update.message.reply_text(
+        ARIA_SCENE_INTRO,
+        parse_mode="Markdown",
+        reply_markup=_continue_keyboard(),
+    )
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -168,7 +187,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
 
     db.add_message(conversation_id, "assistant", reply)
-    await update.message.reply_text(reply)
+    await update.message.reply_text(reply, reply_markup=_continue_keyboard())
+
+
+async def continue_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """SpicyChat-style Continue: advance the scene without user dialogue."""
+    query = update.callback_query
+    await query.answer()
+
+    user = update.effective_user
+    db.upsert_user(user.id, user.username, user.first_name)
+
+    character_id = _get_or_create_default_character()
+    conversation_id = db.get_or_create_conversation(user.id, character_id)
+    history = db.get_recent_messages(conversation_id, limit=16)
+    profile_text = _character_profile_text(character_id)
+
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+
+    reply = await llm.generate_reply(
+        user_message="",
+        history=history,
+        character_profile=profile_text,
+        is_continue=True,
+    )
+
+    db.add_message(conversation_id, "assistant", reply)
+    await query.message.reply_text(reply, reply_markup=_continue_keyboard())
 
 
 def main() -> None:
@@ -181,6 +226,7 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("new", new_command))
+    application.add_handler(CallbackQueryHandler(continue_callback, pattern="^rp_continue$"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("Bot is starting...")
