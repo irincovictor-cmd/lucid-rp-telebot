@@ -1,53 +1,68 @@
 """
-Grok / xAI LLM service for Lucid RP Telebot.
+AI Horde text generation service for Lucid RP Telebot.
 
-Uses the OpenAI-compatible Chat Completions API pointed at api.x.ai.
+Free, community-powered LLM inference via https://aihorde.net
+Uses the same AI_HORDE_API_KEY as image generation.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Any
 
-from openai import AsyncOpenAI
+import httpx
 
 logger = logging.getLogger(__name__)
 
-# Client is created lazily so that load_dotenv() has time to run first
-_client: AsyncOpenAI | None = None
+HORDE_API_BASE = "https://aihorde.net/api/v2"
+HORDE_API_KEY = os.getenv("AI_HORDE_API_KEY", "0000000000")
+CLIENT_AGENT = "LucidRPTelebot:1.0:https://github.com/irincovictor-cmd/lucid-rp-telebot"
 
-
-def _get_client() -> AsyncOpenAI:
-    global _client
-    if _client is None:
-        api_key = os.getenv("XAI_API_KEY")
-        if not api_key:
-            raise ValueError(
-                "XAI_API_KEY is not set in .env. "
-                "Make sure the .env file exists in the project root and contains XAI_API_KEY=..."
-            )
-        _client = AsyncOpenAI(
-            api_key=api_key,
-            base_url="https://api.x.ai/v1",
-        )
-    return _client
-
-
-def _get_model() -> str:
-    return os.getenv("XAI_MODEL", "grok-4.6")
+# How long to wait for a generation (seconds)
+MAX_WAIT_SECONDS = 180
+POLL_INTERVAL = 3.0
 
 
 DEFAULT_SYSTEM_PROMPT = """You are an immersive roleplay AI companion inside a Telegram bot called Lucid RP Telebot.
 You are currently playing the character described below.
 
 Stay fully in character. Be engaging, expressive, and responsive to the user's messages.
-Keep replies natural and conversational (usually 1–4 paragraphs unless the scene needs more).
+Keep replies natural and conversational (usually 1-4 paragraphs unless the scene needs more).
 Do not break character or mention that you are an AI unless the user explicitly asks.
 
 Character:
 {character_profile}
 """
+
+
+def _build_prompt(
+    *,
+    user_message: str,
+    history: list[dict[str, Any]],
+    character_profile: str,
+    system_prompt: str | None = None,
+) -> str:
+    """Turn chat history into a single prompt string for Kobold-style models."""
+    if system_prompt is None:
+        system_prompt = DEFAULT_SYSTEM_PROMPT.format(character_profile=character_profile)
+
+    parts: list[str] = [system_prompt.strip(), ""]
+
+    for msg in history:
+        role = msg.get("role")
+        content = (msg.get("content") or "").strip()
+        if not content:
+            continue
+        if role == "user":
+            parts.append(f"User: {content}")
+        elif role == "assistant":
+            parts.append(f"Assistant: {content}")
+
+    parts.append(f"User: {user_message}")
+    parts.append("Assistant:")
+    return "\n".join(parts)
 
 
 async def generate_reply(
@@ -58,49 +73,100 @@ async def generate_reply(
     system_prompt: str | None = None,
 ) -> str:
     """
-    Generate a roleplay reply from Grok.
+    Generate a roleplay reply using AI Horde text workers.
 
-    Args:
-        user_message: The latest message from the user.
-        history: List of previous messages, each with keys "role" and "content".
-                 Roles should be "user" or "assistant".
-        character_profile: Text description / profile of the current character.
-        system_prompt: Optional custom system prompt. If None, DEFAULT_SYSTEM_PROMPT is used.
-
-    Returns:
-        The assistant's reply text.
+    Returns the generated text, or a friendly error message on failure.
     """
-    client = _get_client()
-    model = _get_model()
+    prompt = _build_prompt(
+        user_message=user_message,
+        history=history,
+        character_profile=character_profile,
+        system_prompt=system_prompt,
+    )
 
-    if system_prompt is None:
-        system_prompt = DEFAULT_SYSTEM_PROMPT.format(character_profile=character_profile)
+    payload = {
+        "prompt": prompt,
+        "params": {
+            "max_length": 300,          # tokens to generate
+            "max_context_length": 2048,
+            "temperature": 0.85,
+            "top_p": 0.9,
+            "rep_pen": 1.1,
+            "stop_sequence": ["User:", "\nUser:", "\nUser "],
+        },
+        "models": [],                  # empty = any available model
+        "trusted_workers": False,
+        "slow_workers": True,
+        "nsfw": True,
+        "r2": True,
+    }
 
-    messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
-
-    # Add recent history (already in chronological order from the DB helper)
-    for msg in history:
-        role = msg.get("role")
-        content = msg.get("content")
-        if role in ("user", "assistant") and content:
-            messages.append({"role": role, "content": content})
-
-    # Current user message (in case it is not already the last item in history)
-    if not messages or messages[-1].get("content") != user_message:
-        messages.append({"role": "user", "content": user_message})
+    headers = {
+        "apikey": HORDE_API_KEY,
+        "Client-Agent": CLIENT_AGENT,
+        "Content-Type": "application/json",
+    }
 
     try:
-        response = await client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=0.9,
-            max_tokens=1024,
-        )
-        reply = response.choices[0].message.content or ""
-        return reply.strip()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # 1. Submit the job
+            resp = await client.post(
+                f"{HORDE_API_BASE}/generate/text/async",
+                json=payload,
+                headers=headers,
+            )
+            if resp.status_code >= 400:
+                logger.error("Horde submit failed: %s %s", resp.status_code, resp.text)
+                return (
+                    "Sorry, the free AI service is busy or unavailable right now. "
+                    "Please try again in a minute."
+                )
+
+            data = resp.json()
+            job_id = data.get("id")
+            if not job_id:
+                logger.error("Horde returned no job id: %s", data)
+                return "Sorry, something went wrong starting the reply. Please try again."
+
+            # 2. Poll until done or timeout
+            elapsed = 0.0
+            while elapsed < MAX_WAIT_SECONDS:
+                await asyncio.sleep(POLL_INTERVAL)
+                elapsed += POLL_INTERVAL
+
+                status_resp = await client.get(
+                    f"{HORDE_API_BASE}/generate/text/status/{job_id}",
+                    headers=headers,
+                )
+                if status_resp.status_code >= 400:
+                    logger.error("Horde status failed: %s", status_resp.text)
+                    continue
+
+                status = status_resp.json()
+                if status.get("done"):
+                    generations = status.get("generations') or status.get("generations") or []
+                    if generations:
+                        text = (generations[0].get("text") or "").strip()
+                        if text:
+                            # Clean common trailing artifacts
+                            for stop in ("User:", "\nUser"):
+                                if stop in text:
+                                    text = text.split(stop)[0].strip()
+                            return text
+                    return "(The AI returned an empty reply. Please try again.)"
+
+                if status.get("faulted"):
+                    logger.error("Horde job faulted: %s", status)
+                    return "Sorry, the free AI workers failed on that request. Please try again."
+
+            return (
+                "Sorry, the free AI workers are taking too long right now. "
+                "Please try again in a bit."
+            )
+
     except Exception as e:
-        logger.exception("Grok API error")
+        logger.exception("AI Horde text generation error")
         return (
-            "Sorry, I had trouble thinking of a reply just now. "
-            f"(Error: {type(e).__name__}) Please try again in a moment."
+            "Sorry, I had trouble reaching the free AI service. "
+            f"(Error: {type(e).__name__}) Please try again shortly."
         )
