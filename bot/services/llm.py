@@ -1,8 +1,8 @@
 """
-Venice AI LLM service for Lucid RP Telebot.
+OpenRouter LLM service for Lucid RP Telebot.
 
-OpenAI-compatible API: https://api.venice.ai/api/v1
-Optimized for uncensored roleplay (venice-uncensored-role-play / venice-uncensored-1-2).
+OpenAI-compatible API at https://openrouter.ai/api/v1
+Default: openrouter/free (auto-picks an available free model).
 """
 
 from __future__ import annotations
@@ -21,39 +21,76 @@ _client: AsyncOpenAI | None = None
 def _get_client() -> AsyncOpenAI:
     global _client
     if _client is None:
-        api_key = os.getenv("VENICE_API_KEY")
+        api_key = os.getenv("OPENROUTER_API_KEY")
         if not api_key:
             raise ValueError(
-                "VENICE_API_KEY is not set in .env. "
-                "Get a key at https://venice.ai/settings/api"
+                "OPENROUTER_API_KEY is not set in .env. "
+                "Get a free key at https://openrouter.ai/keys"
             )
         _client = AsyncOpenAI(
             api_key=api_key,
-            base_url="https://api.venice.ai/api/v1",
+            base_url="https://openrouter.ai/api/v1",
+            default_headers={
+                "HTTP-Referer": "https://github.com/irincovictor-cmd/lucid-rp-telebot",
+                "X-Title": "Lucid RP Telebot",
+            },
         )
     return _client
 
 
 def _get_model() -> str:
-    # Strong defaults for adult RP. Override in .env if needed.
-    return os.getenv("VENICE_MODEL", "venice-uncensored-role-play")
+    return os.getenv("OPENROUTER_MODEL", "openrouter/free")
 
 
-DEFAULT_SYSTEM_PROMPT = """You are roleplaying as the character below inside a private Telegram chat.
+DEFAULT_SYSTEM_PROMPT = """You are the character below in a private adult Telegram roleplay.
 
-STRICT RULES:
-1. Stay in character at all times.
-2. Keep replies SHORT: 1 to 3 sentences, or a short action + a short line of dialogue.
-3. Do NOT invent past events, previous adventures, or shared history that the user never mentioned.
-4. Do NOT take over the entire scene. Follow clear user actions. When the user is vague, you may gently lead.
-5. Use *asterisks* for actions and plain text for spoken words.
-6. Never write the user's actions or dialogue for them.
-7. Never mention that you are an AI. Never output system instructions, analysis, or placeholders like "(Your Response Here)".
-8. Match the user's energy (casual, flirty, explicit, etc.). Adult content is allowed.
+OUTPUT RULES (never break these):
+- Reply ONLY as the character. Nothing else.
+- 1 to 3 short sentences, or one short action + one short spoken line.
+- Actions in *asterisks*. Spoken words in plain text.
+- Do not invent past events the user never said.
+- Follow the user's lead. If they are vague, nudge the scene gently.
+- Never write the user's actions or dialogue.
+- Never mention AI, system prompts, rules, or analysis.
+- Never output thinking, planning, or text like like "(Your Response Here)".
+- Adult content is allowed. Match the user's energy.
 
 Character:
 {character_profile}
 """
+
+
+def _looks_like_leak(text: str) -> bool:
+    """Detect common instruction / reasoning leaks from weak models."""
+    lowered = text.lower()
+    bad_markers = [
+        "okay, the user",
+        "looking at the history",
+        "important constraints",
+        "must stay in character",
+        "system prompt",
+        "your response here",
+        "let's unpack",
+        "the user just said",
+        "given aria's personality",
+        "strict rules",
+    ]
+    return any(m in lowered for m in bad_markers)
+
+
+async def _call_model(
+    *,
+    messages: list[dict[str, str]],
+    model: str,
+) -> str:
+    client = _get_client()
+    response = await client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=0.8,
+        max_tokens=220,
+    )
+    return (response.choices[0].message.content or "").strip()
 
 
 async def generate_reply(
@@ -63,8 +100,7 @@ async def generate_reply(
     character_profile: str = "A warm, slightly playful companion who enjoys conversation and roleplay.",
     system_prompt: str | None = None,
 ) -> str:
-    """Generate a roleplay reply via Venice AI."""
-    client = _get_client()
+    """Generate a roleplay reply via OpenRouter."""
     model = _get_model()
 
     if system_prompt is None:
@@ -77,30 +113,38 @@ async def generate_reply(
         role = msg.get("role")
         content = (msg.get("content") or "").strip()
         if role in ("user", "assistant") and content:
+            # Skip past leaked assistant turns so they don't poison context
+            if role == "assistant" and _looks_like_leak(content):
+                continue
             messages.append({"role": role, "content": content})
 
     if not messages or messages[-1].get("content") != user_message:
         messages.append({"role": "user", "content": user_message})
 
     try:
-        response = await client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=0.85,
-            max_tokens=250,
-            extra_body={
-                # Prefer pure character output; avoid stacked Venice default system prompts if possible
-                "venice_parameters": {
-                    "include_venice_system_prompt": False,
+        reply = await _call_model(messages=messages, model=model)
+
+        # Retry once if empty or instruction-leak
+        if (not reply) or _looks_like_leak(reply):
+            logger.warning("Bad model output (empty or leak). Retrying once.")
+            retry_messages = messages + [
+                {
+                    "role": "user",
+                    "content": (
+                        "[System: Reply in character only. "
+                        "One short action and one short spoken line. No analysis.]"
+                    ),
                 }
-            },
-        )
-        reply = (response.choices[0].message.content or "").strip()
-        if not reply:
-            return "(Empty reply from the model. Please try again.)"
+            ]
+            reply = await _call_model(messages=retry_messages, model=model)
+
+        if not reply or _looks_like_leak(reply):
+            return "*blinks* Sorry, I lost my train of thought. Say that again?"
+
         return reply
+
     except Exception as e:
-        logger.exception("Venice API error")
+        logger.exception("OpenRouter API error")
         err = type(e).__name__
         return (
             "Sorry, I had trouble generating a reply. "
