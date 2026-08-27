@@ -2,8 +2,7 @@
 OpenRouter LLM service for Lucid RP Telebot.
 
 Uses the OpenAI-compatible Chat Completions API at https://openrouter.ai/api/v1
-Free models are available (IDs ending in :free). Quality is much more stable
-than random AI Horde text workers.
+Default model is openrouter/free (auto-picks an available free model).
 """
 
 from __future__ import annotations
@@ -40,12 +39,9 @@ def _get_client() -> AsyncOpenAI:
 
 
 def _get_model() -> str:
-    # Prefer a free model by default. User can override in .env.
-    # Check https://openrouter.ai/models?q=free for current free slugs.
-    return os.getenv(
-        "OPENROUTER_MODEL",
-        "meta-llama/llama-3.3-70b-instruct:free",
-    )
+    # openrouter/free auto-selects from currently available free models.
+    # Override in .env with any free slug, e.g. google/gemma-4-31b-it:free
+    return os.getenv("OPENROUTER_MODEL", "openrouter/free")
 
 
 DEFAULT_SYSTEM_PROMPT = """You are roleplaying as the character below inside a private Telegram chat.
@@ -72,11 +68,7 @@ async def generate_reply(
     character_profile: str = "A warm, slightly playful companion who enjoys conversation and roleplay.",
     system_prompt: str | None = None,
 ) -> str:
-    """
-    Generate a roleplay reply via OpenRouter.
-
-    Returns the assistant text, or a short error message on failure.
-    """
+    """Generate a roleplay reply via OpenRouter."""
     client = _get_client()
     model = _get_model()
 
@@ -85,7 +77,6 @@ async def generate_reply(
 
     messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
 
-    # Recent history only (keeps context focused)
     recent = history[-16:] if len(history) > 16 else history
     for msg in recent:
         role = msg.get("role")
@@ -93,7 +84,6 @@ async def generate_reply(
         if role in ("user", "assistant") and content:
             messages.append({"role": role, "content": content})
 
-    # Ensure current user message is last
     if not messages or messages[-1].get("content") != user_message:
         messages.append({"role": "user", "content": user_message})
 
@@ -102,8 +92,9 @@ async def generate_reply(
             model=model,
             messages=messages,
             temperature=0.85,
-            max_tokens=250,
+            max_tokens("max_tokens", 250),
         )
+        # fix below - can't use maxkwargs like that
         reply = (response.choices[0].message.content or "").strip()
         if not reply:
             return "(Empty reply from the model. Please try again.)"
