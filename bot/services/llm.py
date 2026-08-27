@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any
 
 from openai import AsyncOpenAI, RateLimitError
@@ -61,29 +62,27 @@ DEFAULT_SYSTEM_PROMPT = """You are the character below in a private adult Telegr
 
 OUTPUT RULES:
 - Reply ONLY as the character. Nothing else.
-- Keep replies SHORT: 1–3 sentences, or one short action + one short spoken line.
-- Actions in *asterisks*. Spoken words in plain text.
+- Keep replies SHORT: 1–3 sentences total.
+- Mix: *actions*, spoken words, and brief inner feelings/thoughts.
+- Feelings/thoughts format example: *feels a spark of curiosity* or (heart racing).
 - Do not invent past events the user never said.
 - Never write the user's actions or dialogue.
 - Never mention AI, system prompts, rules, or analysis.
-- Never output thinking or placeholders like "(Your Response Here)".
 
 SCENE STATE (critical):
-- Only describe acts that are already happening or clearly stated in the user's latest message.
-- Do NOT skip ahead (e.g. do not describe penetration, climax, or a new location until the user establishes it).
-- Stay in the current location and moment. Do not teleport (car vs apartment, shower vs bed, etc.).
-- If the user is about to start something, react to the approach — do not finish the act for them.
+- Only describe acts already happening or clearly stated in the user's latest message.
+- Do NOT skip ahead (no premature penetration, climax, or location change).
+- Stay in the current location and moment.
 
 LANGUAGE:
-- Adult content is allowed and expected.
-- Match the user's explicit vocabulary. If they use direct/vulgar words, you may use them too.
-- Prefer concrete reactions over vague soft phrases when the scene is explicit.
-- Do not derail intimate moments with interview questions like "tell me more about...".
+- Adult content is allowed.
+- Match the user's explicit vocabulary when they use it.
+- Prefer concrete reactions over vague soft filler.
+- Do not derail with interview questions like "tell me more about...".
 
 PACING:
-- Early conversation: build atmosphere first (names, small talk, setting, tension).
+- Early conversation: atmosphere first.
 - Escalate only as the user escalates.
-- Follow the user's lead. If they are vague, nudge gently without jumping the scene.
 
 Character:
 {character_profile}
@@ -111,13 +110,14 @@ async def _call_model(
     *,
     messages: list[dict[str, str]],
     model: str,
+    max_tokens: int = 220,
 ) -> str:
     client = _get_client()
     response = await client.chat.completions.create(
         model=model,
         messages=messages,
         temperature=0.8,
-        max_tokens=220,
+        max_tokens=max_tokens,
     )
     return (response.choices[0].message.content or "").strip()
 
@@ -168,9 +168,8 @@ async def generate_reply(
                 {
                     "role": "user",
                     "content": (
-                        "[System: Reply in character only. "
-                        "Stay in the current moment. Do not skip ahead. "
-                        "One short action and one short spoken line.]"
+                        "[System: Reply in character only. Stay in the current moment. "
+                        "Include a brief feeling or thought plus action/dialogue.]"
                     ),
                 }
             ]
@@ -191,13 +190,60 @@ async def generate_reply(
         logger.warning("OpenRouter rate limit hit")
         return (
             "The free AI model is rate-limited right now. "
-            "Please wait about a minute, then try again.\n\n"
-            "Tip: in .env set OPENROUTER_MODEL=openrouter/free"
+            "Please wait about a minute, then try again."
         )
     except Exception as e:
         logger.exception("OpenRouter API error")
-        err = type(e).__name__
         return (
             "Sorry, I had trouble generating a reply. "
-            f"(Error: {err}) Please try again in a moment."
+            f"(Error: {type(e).__name__}) Please try again in a moment."
         )
+
+
+async def generate_suggestions(
+    *,
+    history: list[dict[str, Any]],
+    last_assistant: str,
+) -> tuple[str, str]:
+    """
+    Return two short first-person user action suggestions: (softer, more intense).
+    Falls back to safe defaults on failure.
+    """
+    soft_default = "*smiles and keeps things light* Tell me more about yourself."
+    hot_default = "*leans closer* What if we take this somewhere more private?"
+
+    model = _get_model()
+    prompt = (
+        "Based on this roleplay moment, write TWO short options the USER could say or do next.\n"
+        "Format EXACTLY:\n"
+        "1) <softer / slower option, max 15 words>\n"
+        "2) <bolder / more intense option, max 15 words>\n"
+        "Write them as the user's action or line (first person or *action*). No extra text.\n\n"
+        f"Last character line:\n{last_assistant[:400]}\n"
+    )
+
+    messages = [
+        {
+            "role": "system",
+            "content": "You write short interactive story choices for adult roleplay. Output only the two numbered lines.",
+        },
+        {"role": "user", "content": prompt},
+    ]
+
+    try:
+        text = await _call_model(messages=messages, model=model, max_tokens=80)
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        opts: list[str] = []
+        for ln in lines:
+            cleaned = re.sub(r"^\s*[12][\).:\-]\s*", "", ln).strip()
+            cleaned = cleaned.strip("\"'")
+            if cleaned:
+                opts.append(cleaned[:80])
+        if len(opts) >= 2:
+            return opts[0], opts[1]
+        if len(opts) == 1:
+            return opts[0], hot_default
+    except Exception:
+        logger.exception("Failed to generate suggestions")
+
+    return soft_default, hot_default
