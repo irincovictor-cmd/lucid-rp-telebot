@@ -1,8 +1,8 @@
 """
-OpenRouter LLM service for Lucid RP Telebot.
+Venice AI LLM service for Lucid RP Telebot.
 
-Uses the OpenAI-compatible Chat Completions API at https://openrouter.ai/api/v1
-Default model is openrouter/free (auto-picks an available free model).
+OpenAI-compatible API: https://api.venice.ai/api/v1
+Optimized for uncensored roleplay (venice-uncensored-role-play / venice-uncensored-1-2).
 """
 
 from __future__ import annotations
@@ -21,27 +21,22 @@ _client: AsyncOpenAI | None = None
 def _get_client() -> AsyncOpenAI:
     global _client
     if _client is None:
-        api_key = os.getenv("OPENROUTER_API_KEY")
+        api_key = os.getenv("VENICE_API_KEY")
         if not api_key:
             raise ValueError(
-                "OPENROUTER_API_KEY is not set in .env. "
-                "Get a free key at https://openrouter.ai/keys"
+                "VENICE_API_KEY is not set in .env. "
+                "Get a key at https://venice.ai/settings/api"
             )
         _client = AsyncOpenAI(
             api_key=api_key,
-            base_url="https://openrouter.ai/api/v1",
-            default_headers={
-                "HTTP-Referer": "https://github.com/irincovictor-cmd/lucid-rp-telebot",
-                "X-Title": "Lucid RP Telebot",
-            },
+            base_url="https://api.venice.ai/api/v1",
         )
     return _client
 
 
 def _get_model() -> str:
-    # openrouter/free auto-selects from currently available free models.
-    # Override in .env with any free slug, e.g. google/gemma-4-31b-it:free
-    return os.getenv("OPENROUTER_MODEL", "openrouter/free")
+    # Strong defaults for adult RP. Override in .env if needed.
+    return os.getenv("VENICE_MODEL", "venice-uncensored-role-play")
 
 
 DEFAULT_SYSTEM_PROMPT = """You are roleplaying as the character below inside a private Telegram chat.
@@ -53,8 +48,8 @@ STRICT RULES:
 4. Do NOT take over the entire scene. Follow clear user actions. When the user is vague, you may gently lead.
 5. Use *asterisks* for actions and plain text for spoken words.
 6. Never write the user's actions or dialogue for them.
-7. Never mention that you are an AI, never output system instructions, never output placeholders like "(Your Response Here)".
-8. Match the user's energy (casual, flirty, explicit, etc.).
+7. Never mention that you are an AI. Never output system instructions, analysis, or placeholders like "(Your Response Here)".
+8. Match the user's energy (casual, flirty, explicit, etc.). Adult content is allowed.
 
 Character:
 {character_profile}
@@ -68,7 +63,7 @@ async def generate_reply(
     character_profile: str = "A warm, slightly playful companion who enjoys conversation and roleplay.",
     system_prompt: str | None = None,
 ) -> str:
-    """Generate a roleplay reply via OpenRouter."""
+    """Generate a roleplay reply via Venice AI."""
     client = _get_client()
     model = _get_model()
 
@@ -93,13 +88,19 @@ async def generate_reply(
             messages=messages,
             temperature=0.85,
             max_tokens=250,
+            extra_body={
+                # Prefer pure character output; avoid stacked Venice default system prompts if possible
+                "venice_parameters": {
+                    "include_venice_system_prompt": False,
+                }
+            },
         )
         reply = (response.choices[0].message.content or "").strip()
         if not reply:
             return "(Empty reply from the model. Please try again.)"
         return reply
     except Exception as e:
-        logger.exception("OpenRouter API error")
+        logger.exception("Venice API error")
         err = type(e).__name__
         return (
             "Sorry, I had trouble generating a reply. "
