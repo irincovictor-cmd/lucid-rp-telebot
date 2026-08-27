@@ -1,57 +1,51 @@
 # API Notes
 
-Useful reference for the free APIs used in this project.
+Reference for APIs used in this project.
 
 ---
 
-## AI Horde (Image Generation)
+## OpenRouter (Roleplay LLM) — **current**
+
+- **Website**: https://openrouter.ai
+- **Keys**: https://openrouter.ai/keys
+- **Free models**: https://openrouter.ai/models?q=free
+- **API**: OpenAI-compatible `https://openrouter.ai/api/v1`
+- **Env**:
+  - `OPENROUTER_API_KEY`
+  - `OPENROUTER_MODEL` (default `openrouter/free`)
+  - `OPENROUTER_FALLBACK_MODEL` (optional)
+
+### Notes
+- Free models are rate-limited and change over time.
+- Prefer `openrouter/free` so one busy model does not block the bot.
+- Prompt rules in `bot/services/llm.py` handle short replies, no scene-skip, explicit vocab matching, and leak retries.
+
+---
+
+## AI Horde (Image Generation) — **planned**
 
 - **Website**: https://aihorde.net
 - **API Docs**: https://aihorde.net/api
-- **Cost**: Completely free (community GPU power)
-- **NSFW**: Allowed (only CSAM is blocked)
-- **Authentication**: API key (register for better priority) or anonymous `0000000000`
+- **Cost**: Free (community workers)
+- **NSFW**: Allowed (CSAM blocked)
+- **Env**: `AI_HORDE_API_KEY` (or anonymous `0000000000`)
 
-### Key Concepts
-- Asynchronous: Submit job → receive ID → poll for result
-- Kudos system: Higher kudos = higher priority
-- Workers can choose which models and NSFW settings they support
-
-### Recommended Approach for the Bot
-1. Submit generation request with good positive + negative prompt
-2. Poll `/generate/check` until done
-3. Download image from the returned URL
-4. Send to Telegram user
-5. Show progress messages so user knows it’s working
-
-### Useful Models (subject to change)
-Check currently active models via the API. Popular NSFW-capable ones often include various Pony, SDXL, and specialized fine-tunes.
+### Planned bot flow
+1. Build prompt from character + recent scene
+2. Submit async job
+3. Poll until done
+4. Send image to Telegram + status messages
 
 ---
 
-## Grok (xAI) – Roleplay LLM
+## Deprecated / not used for RP
 
-- Used for character roleplay and prompt rewriting
-- Strong long-context and uncensored capabilities
-- Requires xAI API key
-
-### Recommended Usage
-- System prompt defines the character + roleplay style
-- Include recent conversation history
-- Separate call for rewriting user image requests into strong prompts
+| Provider | Why |
+|----------|-----|
+| xAI / Grok | Paid |
+| AI Horde text | Low / unstable RP quality |
+| Venice AI | Not free long-term |
 
 ---
 
-## Future / Fallback Image Providers
-
-These can be added later if needed:
-
-- PixAI (good for anime, has free daily credits)
-- Self-hosted ComfyUI / Automatic1111 (best quality long-term if you get a GPU)
-- Other free/uncensored APIs as they appear
-
-The image generation service should be abstracted so switching providers is easy.
-
----
-
-Last Updated: August 26, 2026
+Last Updated: August 28, 2026
