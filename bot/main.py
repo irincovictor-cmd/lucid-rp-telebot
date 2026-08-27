@@ -39,7 +39,8 @@ BOT_WELCOME = (
     "/start — welcome + meet Aria\n"
     "/help — how to use\n"
     "/new — reset memory\n"
-    "/img <description> — generate a scene image (AI Horde, free, can be slow)"
+    "/img — image from current scene (or `/img your details`)\n"
+    "Images: 2D anime style via AI Horde (free, can be slow)"
 )
 
 ARIA_SCENE_INTRO = (
@@ -57,10 +58,10 @@ ARIA_PROFILE = (
     "Name: Aria\n"
     "Setting: Rooftop bar after midnight; city lights; intimate, low-key mood.\n"
     "Personality: Warm, curious, slightly teasing. Builds atmosphere before escalating.\n"
-    "Tone: Short replies with *actions*, dialogue, and brief feelings/thoughts."
+    "Tone: Short replies with *actions*, dialogue, and brief feelings/thoughts.\n"
+    "Appearance: 2D anime; long black hair; red eyes; thin glasses."
 )
 
-# Temporary store for suggestion button texts (callback_data has size limits)
 _suggestion_store: dict[str, tuple[str, str]] = {}
 
 
@@ -73,6 +74,7 @@ def _rp_keyboard(soft: str | None = None, bold: str | None = None, key: str | No
                 InlineKeyboardButton("Bold 🔥", callback_data=f"rp_sugg:{key}:1"),
             ]
         )
+    rows.append([InlineKeyboardButton("🖼️ Image", callback_data="rp_img")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -95,6 +97,7 @@ def _get_or_create_default_character() -> int:
                 "Matches the user's pace. Does not invent past shared history."
             ),
             "tone": "Short replies with actions, dialogue, and brief feelings.",
+            "appearance": "2D anime; long black hair; red eyes; thin glasses",
         },
         is_public=True,
     )
@@ -110,7 +113,7 @@ def _character_profile_text(character_id: int) -> str:
                 else character["profile_json"]
             )
             parts = []
-            for k in ("name", "setting", "personality", "tone"):
+            for k in ("name", "setting", "personality", "tone", "appearance"):
                 if profile.get(k):
                     parts.append(f"{k.capitalize()}: {profile[k]}")
             if parts:
@@ -121,19 +124,85 @@ def _character_profile_text(character_id: int) -> str:
 
 
 async def _send_aria_profile(update: Update) -> None:
-    """Send cached/generated Aria portrait if available."""
-    path = await image_gen.ensure_aria_profile_image()
+    status = await update.message.reply_text(
+        "Loading Aria's portrait (2D anime)… first time can take 1–3 min on free workers."
+    )
+
+    async def on_progress(msg: str) -> None:
+        try:
+            await status.edit_text(f"Portrait: {msg}")
+        except Exception:
+            pass
+
+    path = await image_gen.ensure_aria_profile_image(on_progress=on_progress)
     if path and path.exists():
+        try:
+            await status.delete()
+        except Exception:
+            pass
         with path.open("rb") as f:
             await update.message.reply_photo(
                 photo=InputFile(f, filename="aria.webp"),
                 caption="Aria",
             )
     else:
-        await update.message.reply_text(
-            "_(Profile image unavailable right now — free image workers may be busy.)_",
-            parse_mode="Markdown",
-        )
+        try:
+            await status.edit_text(
+                "Portrait unavailable right now — free image workers busy. Try /start later."
+            )
+        except Exception:
+            pass
+
+
+async def _generate_and_send_image(
+    *,
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    scene_hint: str = "",
+    history: list | None = None,
+) -> None:
+    chat_id = update.effective_chat.id
+    status = await context.bot.send_message(
+        chat_id,
+        "🖼️ Generating 2D anime image…\nFree AI Horde queue — please wait.",
+    )
+
+    async def on_progress(msg: str) -> None:
+        try:
+            await status.edit_text(f"🖼️ {msg}")
+        except Exception:
+            pass
+        try:
+            await context.bot.send_chat_action(chat_id=chat_id, action="upload_photo")
+        except Exception:
+            pass
+
+    data = await image_gen.generate_scene_image(
+        scene_hint=scene_hint,
+        history=history or [],
+        on_progress=on_progress,
+    )
+
+    if not data:
+        try:
+            await status.edit_text(
+                "Image failed or timed out. Free workers may be busy — try again in a bit."
+            )
+        except Exception:
+            pass
+        return
+
+    try:
+        await status.delete()
+    except Exception:
+        pass
+
+    caption = scene_hint[:200] if scene_hint else "From current scene"
+    await context.bot.send_photo(
+        chat_id,
+        photo=InputFile(BytesIO(data), filename="scene.webp"),
+        caption=caption,
+    )
 
 
 async def _reply_with_suggestions(
@@ -146,7 +215,6 @@ async def _reply_with_suggestions(
     soft, bold = await llm.generate_suggestions(history=history, last_assistant=reply)
     key = f"{conversation_id}_{abs(hash(reply)) % 10_000_000}"
     _suggestion_store[key] = (soft, bold)
-    # Cap store size
     if len(_suggestion_store) > 200:
         for old in list(_suggestion_store.keys())[:50]:
             _suggestion_store.pop(old, None)
@@ -187,14 +255,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     help_text = (
         "**How to use**\n\n"
-        "Reply in character, or use buttons:\n"
-        "• **Continue** — Aria keeps going\n"
-        "• **Soft / Bold** — pick a suggested reply\n\n"
-        "Commands:\n"
-        "/start — welcome + Aria\n"
-        "/help — this help\n"
-        "/new — reset memory\n"
-        "/img <scene> — generate an image (slow free queue)"
+        "Reply in character, or use buttons.\n\n"
+        "**Images (2D anime)**\n"
+        "• `/img` — generate from current chat scene\n"
+        "• `/img torn stockings, glasses, on bed` — add your details\n"
+        "• **Image** button under replies — same as `/img`\n\n"
+        "Free queue can take 30s–3min; status messages will update."
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
@@ -226,29 +292,38 @@ async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def img_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Generate a scene image with AI Horde."""
+    """Generate image: optional text + always uses recent chat for consistency."""
     desc = " ".join(context.args).strip() if context.args else ""
-    if not desc:
-        await update.message.reply_text(
-            "Usage: `/img Aria smiling at the rooftop bar`\n"
-            "Free workers can take 30s–3min.",
-            parse_mode="Markdown",
-        )
-        return
 
-    await update.message.reply_text("Generating image… (free queue, please wait)")
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="upload_photo")
+    user = update.effective_user
+    db.upsert_user(user.id, user.username, user.first_name)
+    character_id = _get_or_create_default_character()
+    conversation_id = db.get_or_create_conversation(user.id, character_id)
+    history = db.get_recent_messages(conversation_id, limit=12)
 
-    data = await image_gen.generate_scene_image(desc, character_name="Aria")
-    if not data:
-        await update.message.reply_text(
-            "Image generation failed or timed out. Try again later."
-        )
-        return
+    await _generate_and_send_image(
+        update=update,
+        context=context,
+        scene_hint=desc,
+        history=history,
+    )
 
-    await update.message.reply_photo(
-        photo=InputFile(BytesIO(data), filename="scene.webp"),
-        caption=desc[:200],
+
+async def img_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer("Generating image from scene…")
+
+    user = update.effective_user
+    db.upsert_user(user.id, user.username, user.first_name)
+    character_id = _get_or_create_default_character()
+    conversation_id = db.get_or_create_conversation(user.id, character_id)
+    history = db.get_recent_messages(conversation_id, limit=12)
+
+    await _generate_and_send_image(
+        update=update,
+        context=context,
+        scene_hint="",
+        history=history,
     )
 
 
@@ -315,12 +390,10 @@ async def continue_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 async def suggestion_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """User picked Soft or Bold suggestion — treat as their message."""
     query = update.callback_query
     await query.answer()
 
     data = query.data or ""
-    # rp_sugg:{key}:{0|1}
     try:
         _, key, idx_s = data.split(":", 2)
         idx = int(idx_s)
@@ -346,7 +419,6 @@ async def suggestion_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     profile_text = _character_profile_text(character_id)
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    # Echo what the user "said" via button
     await query.message.reply_text(f"You: {text}")
 
     reply = await llm.generate_reply(
@@ -376,6 +448,7 @@ def main() -> None:
     application.add_handler(CommandHandler("img", img_command))
     application.add_handler(CallbackQueryHandler(continue_callback, pattern="^rp_continue$"))
     application.add_handler(CallbackQueryHandler(suggestion_callback, pattern="^rp_sugg:"))
+    application.add_handler(CallbackQueryHandler(img_callback, pattern="^rp_img$"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("Bot is starting...")
