@@ -4,7 +4,6 @@ import os
 
 from dotenv import load_dotenv
 
-# Load .env as early as possible, before any module reads environment variables
 load_dotenv()
 
 from telegram import Update
@@ -13,7 +12,6 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 from bot.db import database as db
 from bot.services import llm
 
-# Enable logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
@@ -22,62 +20,38 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
+BOT_WELCOME = (
+    "💖 **HoneyChat / Lucid RP** — private 18+ AI roleplay\n\n"
+    "Talk dirty or deep. Stay in a scene. Build whatever fantasy you want.\n\n"
+    "⚠️ Adults only (18+).\n\n"
+    "Commands:\n"
+    "/start — welcome + meet Aria\n"
+    "/help — how to use\n"
+    "/new — reset memory and restart Aria's intro"
+)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send a message when the command /start is issued."""
-    user = update.effective_user
+ARIA_SCENE_INTRO = (
+    "🌙 **Aria**\n\n"
+    "A quiet rooftop bar after midnight. Soft music, city lights below, "
+    "one empty stool beside a woman who looks like she's been waiting for something "
+    "interesting to happen.\n\n"
+    "Aria turns toward you — warm eyes, a small playful smile, glass in hand.\n\n"
+    "*tilts her head, studying you*\n"
+    "You're new here… or at least, I haven't seen you around. "
+    "What brings you up here tonight?"
+)
 
-    db.upsert_user(user.id, user.username, user.first_name)
-
-    welcome_text = (
-        f"Hey {user.first_name} 👋\n\n"
-        "Welcome to **Lucid RP Telebot** — an 18+ AI roleplay bot.\n\n"
-        "⚠️ This bot is for adults only (18+).\n\n"
-        "Just send me a message and I\'ll roleplay with you.\n\n"
-        "Commands:\n"
-        "/start - Show this message\n"
-        "/help - How to use the bot\n"
-        "/new - Start a fresh conversation (clears memory)"
-    )
-    await update.message.reply_text(welcome_text, parse_mode="Markdown")
-
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send a message when the command /help is issued."""
-    help_text = (
-        "**How to use Lucid RP Telebot**\n\n"
-        "Just send any message and I will reply in character.\n\n"
-        "Commands:\n"
-        "/start - Welcome message\n"
-        "/help - This help\n"
-        "/new - Reset conversation memory\n\n"
-        "Coming soon:\n"
-        "• Multiple characters + selection\n"
-        "• NSFW image generation\n"
-        "• Character creation\n"
-        "• Save / load checkpoints\n"
-    )
-    await update.message.reply_text(help_text, parse_mode="Markdown")
-
-
-async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Clear the current conversation memory so the AI starts fresh."""
-    user = update.effective_user
-    db.upsert_user(user.id, user.username, user.first_name)
-
-    character_id = _get_or_create_default_character()
-    conversation_id = db.get_or_create_conversation(user.id, character_id)
-    db.clear_conversation(conversation_id)
-
-    await update.message.reply_text(
-        "Conversation memory cleared. Send a new message to start fresh."
-    )
+ARIA_PROFILE = (
+    "Name: Aria\n"
+    "Setting: Rooftop bar after midnight; city lights; intimate, low-key mood.\n"
+    "Personality: Warm, curious, slightly teasing and flirty when the mood allows. "
+    "Responsive to the user's energy. Can gently lead when the user is vague, "
+    "but follows clear user direction.\n"
+    "Tone: Short natural replies. Actions in *asterisks*. No invented shared history."
+)
 
 
 def _get_or_create_default_character() -> int:
-    """
-    Temporary stand-in until the real character-selection flow exists.
-    """
     conn = db.get_conn()
     row = conn.execute(
         "SELECT character_id FROM characters WHERE owner_id IS NULL LIMIT 1"
@@ -87,11 +61,12 @@ def _get_or_create_default_character() -> int:
     return db.create_character(
         owner_id=None,
         name="Aria",
-        short_desc="Playful, flirty companion for casual and explicit roleplay.",
+        short_desc="Warm, playful companion at a late-night rooftop bar.",
         profile_json={
             "name": "Aria",
+            "setting": "Rooftop bar after midnight",
             "personality": (
-                "Playful, a bit teasing, and responsive. "
+                "Warm, curious, slightly teasing and flirty. "
                 "Matches the user's energy. Does not invent past shared history."
             ),
             "tone": "Short, natural replies. Actions in *asterisks*.",
@@ -100,30 +75,8 @@ def _get_or_create_default_character() -> int:
     )
 
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Save the user message, call the LLM, save the reply, and send it."""
-    user = update.effective_user
-    text = update.message.text or ""
-
-    if not text.strip():
-        return
-
-    db.upsert_user(user.id, user.username, user.first_name)
-
-    character_id = _get_or_create_default_character()
-    conversation_id = db.get_or_create_conversation(user.id, character_id)
-
-    db.add_message(conversation_id, "user", text)
-
-    history = db.get_recent_messages(conversation_id, limit=16)
-
+def _character_profile_text(character_id: int) -> str:
     character = db.get_character(character_id)
-    profile_text = (
-        "Name: Aria\n"
-        "Personality: Playful, a bit teasing, responsive. Matches the user's energy. "
-        "Does not invent past shared history.\n"
-        "Tone: Short, natural replies. Actions in *asterisks*."
-    )
     if character and character.get("profile_json"):
         try:
             profile = (
@@ -134,14 +87,77 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             parts = []
             if profile.get("name"):
                 parts.append(f"Name: {profile['name']}")
+            if profile.get("setting"):
+                parts.append(f"Setting: {profile['setting']}")
             if profile.get("personality"):
                 parts.append(f"Personality: {profile['personality']}")
             if profile.get("tone"):
                 parts.append(f"Tone: {profile['tone']}")
             if parts:
-                profile_text = "\n".join(parts)
+                return "\n".join(parts)
         except Exception:
             pass
+    return ARIA_PROFILE
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Welcome + Aria scene intro."""
+    user = update.effective_user
+    db.upsert_user(user.id, user.username, user.first_name)
+
+    await update.message.reply_text(BOT_WELCOME, parse_mode="Markdown")
+    await update.message.reply_text(ARIA_SCENE_INTRO, parse_mode="Markdown")
+
+    # Seed conversation so the model knows the opening scene
+    character_id = _get_or_create_default_character()
+    conversation_id = db.get_or_create_conversation(user.id, character_id)
+    # Only seed if conversation is empty
+    existing = db.get_recent_messages(conversation_id, limit=1)
+    if not existing:
+        db.add_message(conversation_id, "assistant", ARIA_SCENE_INTRO)
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    help_text = (
+        "**How to use**\n\n"
+        "Just reply to Aria and stay in the scene.\n\n"
+        "Commands:\n"
+        "/start — bot welcome + Aria intro\n"
+        "/help — this help\n"
+        "/new — clear memory and restart Aria's intro\n\n"
+        "Coming soon: more characters, image gen, checkpoints."
+    )
+    await update.message.reply_text(help_text, parse_mode="Markdown")
+
+
+async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Clear memory and re-send Aria intro."""
+    user = update.effective_user
+    db.upsert_user(user.id, user.username, user.first_name)
+
+    character_id = _get_or_create_default_character()
+    conversation_id = db.get_or_create_conversation(user.id, character_id)
+    db.clear_conversation(conversation_id)
+
+    db.add_message(conversation_id, "assistant", ARIA_SCENE_INTRO)
+    await update.message.reply_text("Memory cleared. Starting fresh with Aria…")
+    await update.message.reply_text(ARIA_SCENE_INTRO, parse_mode="Markdown")
+
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    text = update.message.text or ""
+    if not text.strip():
+        return
+
+    db.upsert_user(user.id, user.username, user.first_name)
+
+    character_id = _get_or_create_default_character()
+    conversation_id = db.get_or_create_conversation(user.id, character_id)
+
+    db.add_message(conversation_id, "user", text)
+    history = db.get_recent_messages(conversation_id, limit=16)
+    profile_text = _character_profile_text(character_id)
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
@@ -156,14 +172,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 def main() -> None:
-    """Start the bot."""
     if not TELEGRAM_BOT_TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN is not set in .env file")
 
     db.init_db()
 
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("new", new_command))
