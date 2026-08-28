@@ -1,7 +1,7 @@
 """
 AI Horde image generation for Lucid RP Telebot.
 
-Aligned with proven JustAAA / Nova Anime XL settings.
+Nova Anime XL + JustAAA-style prompts, with settings that work on low/zero kudos.
 """
 
 from __future__ import annotations
@@ -25,24 +25,20 @@ POLL_INTERVAL = 4.0
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 ARIA_PROFILE_PATH = DATA_DIR / "aria_profile.webp"
 
-# Pin the model that followed instructions well in JustAAA
 DEFAULT_MODEL = os.getenv("AI_HORDE_MODEL", "Nova Anime XL")
 
-# Character identity lock (Aria) — adult, consistent look
 ARIA_VISUAL = (
     "Mature woman, Aria, long black hair, red eyes, thin glasses, "
     "fair skin, large breasts, slim waist, seductive expression, "
     "detailed eyes, beautiful detailed anime face"
 )
 
-# Quality tags from your working JustAAA prompt
 QUALITY_TAGS = (
     "masterpiece, best quality, amazing quality, very aesthetic, "
     "high resolution, ultra-detailed, absurdres, newest, "
     "depth of field, volumetric lighting"
 )
 
-# Default profile scene (R18-leaning character card, not vanilla)
 ARIA_PROFILE_SCENE = (
     "upper body portrait, looking at viewer, seductive expression, "
     "low-cut evening top, soft cleavage, rooftop bar night lights background"
@@ -67,7 +63,6 @@ def build_prompt(
     scene: str,
     character_visual: str = ARIA_VISUAL,
 ) -> str:
-    """Quality tags + character lock + scene (JustAAA-style order)."""
     scene = (scene or "portrait, looking at viewer").strip()
     return f"{QUALITY_TAGS}, {character_visual}, {scene}"
 
@@ -76,9 +71,6 @@ def build_prompt_from_history(
     history: list[dict[str, Any]],
     extra: str = "",
 ) -> str:
-    """
-    Character lock + optional user instructions + recent chat context.
-    """
     bits: list[str] = []
     for msg in history[-8:]:
         content = (msg.get("content") or "").strip()
@@ -90,7 +82,6 @@ def build_prompt_from_history(
     scene_from_chat = " ".join(bits[-4:]) if bits else "intimate scene"
 
     if extra.strip():
-        # User instructions lead; chat only as light context
         scene = f"{extra.strip()}, {scene_from_chat[:160]}"
     else:
         scene = f"{scene_from_chat[:280]}"
@@ -100,6 +91,39 @@ def build_prompt_from_history(
     return build_prompt(scene=scene)
 
 
+def _payload(
+    *,
+    full_prompt: str,
+    nsfw: bool,
+    width: int,
+    height: int,
+    steps: int,
+    cfg_scale: float,
+    sampler: str,
+    models: list[str],
+) -> dict[str, Any]:
+    return {
+        "prompt": full_prompt,
+        "params": {
+            "width": width,
+            "height": height,
+            "steps": steps,
+            "cfg_scale": cfg_scale,
+            "sampler_name": sampler,
+            "karras": True,
+            "clip_skip": 2,
+            "n": 1,
+        },
+        "nsfw": nsfw,
+        "censor_nsfw": False,
+        "r2": True,
+        "trusted_workers": False,
+        "slow_workers": True,
+        "models": models,
+        "replacement_filter": True,
+    }
+
+
 async def generate_image(
     *,
     prompt: str,
@@ -107,31 +131,13 @@ async def generate_image(
     nsfw: bool = True,
     on_progress: Callable[[str], Awaitable[None]] | None = None,
 ) -> bytes | None:
-    """Generate via AI Horde using Nova Anime XL-style settings."""
+    """
+    Generate via AI Horde.
+
+    Default settings stay under the free/low-kudos budget (avoid KudosUpfront 403).
+    On rejection, automatically retries with cheaper settings.
+    """
     full_prompt = f"{prompt} ### {negative_prompt}"
-
-    payload: dict[str, Any] = {
-        "prompt": full_prompt,
-        "params": {
-            "width": 1024,
-            "height": 1024,
-            "steps": 25,
-            "cfg_scale": 5,
-            "sampler_name": "k_dpmpp_sde",
-            "karras": True,
-            "clip_skip": 2,
-            "n": 1,
-            "denoising_strength": 0.75,
-        },
-        "nsfw": nsfw,
-        "censor_nsfw": False,
-        "r2": True,
-        "trusted_workers": False,
-        "slow_workers": True,
-        "models": [DEFAULT_MODEL],
-        "replacement_filter": True,
-    }
-
     headers = {
         "apikey": _api_key(),
         "Client-Agent": CLIENT_AGENT,
@@ -145,36 +151,79 @@ async def generate_image(
             except Exception:
                 pass
 
+    # Try order: good quality free-tier -> cheaper fallback
+    attempts = [
+        {
+            "label": f"{DEFAULT_MODEL} 768x768",
+            "width": 768,
+            "height": 768,
+            "steps": 25,
+            "cfg_scale": 5,
+            "sampler": "k_euler",
+            "models": [DEFAULT_MODEL],
+        },
+        {
+            "label": f"{DEFAULT_MODEL} 512x768",
+            "width": 512,
+            "height": 768,
+            "steps": 25,
+            "cfg_scale": 5,
+            "sampler": "k_euler",
+            "models": [DEFAULT_MODEL],
+        },
+        {
+            "label": "any worker 512x768",
+            "width": 512,
+            "height": 768,
+            "steps": 20,
+            "cfg_scale": 5,
+            "sampler": "k_euler",
+            "models": [],
+        },
+    ]
+
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
-            await progress(f"Submitting to AI Horde ({DEFAULT_MODEL})…")
-            resp = await client.post(
-                f"{HORDE_API_BASE}/generate/async",
-                json=payload,
-                headers=headers,
-            )
-            if resp.status_code >= 400:
-                logger.error("Horde image submit failed: %s %s", resp.status_code, resp.text)
-                # Fallback: retry without pinned model if model unavailable
-                if "model" in resp.text.lower() or resp.status_code == 400:
-                    await progress("Pinned model busy/unavailable — retrying any anime worker…")
-                    payload["models"] = []
-                    resp = await client.post(
-                        f"{HORDE_API_BASE}/generate/async",
-                        json=payload,
-                        headers=headers,
-                    )
+            job_id = None
+            for attempt in attempts:
+                payload = _payload(
+                    full_prompt=full_prompt,
+                    nsfw=nsfw,
+                    width=attempt["width"],
+                    height=attempt["height"],
+                    steps=attempt["steps"],
+                    cfg_scale=attempt["cfg_scale"],
+                    sampler=attempt["sampler"],
+                    models=attempt["models"],
+                )
+                await progress(f"Submitting ({attempt['label']})…")
+                resp = await client.post(
+                    f"{HORDE_API_BASE}/generate/async",
+                    json=payload,
+                    headers=headers,
+                )
                 if resp.status_code >= 400:
-                    await progress("Submit failed.")
-                    return None
+                    logger.error(
+                        "Horde image submit failed: %s %s",
+                        resp.status_code,
+                        resp.text,
+                    )
+                    # KudosUpfront / model issues -> try cheaper next
+                    continue
 
-            data = resp.json()
-            job_id = data.get("id")
+                data = resp.json()
+                job_id = data.get("id")
+                if job_id:
+                    break
+
             if not job_id:
-                logger.error("Horde image no job id: %s", data)
+                await progress(
+                    "Submit rejected (need more AI Horde kudos, or workers busy). "
+                    "Earn kudos at aihorde.net or try again later."
+                )
                 return None
 
-            await progress("Queued (Nova Anime XL can take 1–3 min)…")
+            await progress("Queued on free workers…")
 
             elapsed = 0.0
             last_announce = 0.0
@@ -228,7 +277,6 @@ async def generate_image(
 async def ensure_aria_profile_image(
     on_progress: Callable[[str], Awaitable[None]] | None = None,
 ) -> Path | None:
-    """Cached Aria portrait using new R18-aligned prompt."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     if ARIA_PROFILE_PATH.exists() and ARIA_PROFILE_PATH.stat().st_size > 1000:
         return ARIA_PROFILE_PATH
@@ -252,7 +300,6 @@ async def generate_scene_image(
     history: list[dict[str, Any]] | None = None,
     on_progress: Callable[[str], Awaitable[None]] | None = None,
 ) -> bytes | None:
-    """Generate scene: user hint and/or chat history + Aria lock."""
     history = history or []
     if scene_hint.strip() or history:
         prompt = build_prompt_from_history(history, extra=scene_hint)
