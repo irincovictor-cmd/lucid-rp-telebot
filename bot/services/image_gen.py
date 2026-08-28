@@ -1,8 +1,7 @@
 """
 AI Horde image generation for Lucid RP Telebot.
 
-By default uses ANY available worker (fastest queue).
-Optional AI_HORDE_MODEL can pin a model, or "auto" picks a live anime model.
+Nova Anime XL + JustAAA-style prompts, with settings that work on low/zero kudos.
 """
 
 from __future__ import annotations
@@ -20,31 +19,13 @@ logger = logging.getLogger(__name__)
 HORDE_API_BASE = "https://aihorde.net/api/v2"
 CLIENT_AGENT = "LucidRPTelebot:1.0:https://github.com/irincovictor-cmd/lucid-rp-telebot"
 
-MAX_WAIT_SECONDS = 240  # fail sooner instead of hanging forever
+MAX_WAIT_SECONDS = 360
 POLL_INTERVAL = 4.0
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 ARIA_PROFILE_PATH = DATA_DIR / "aria_profile.webp"
 
-# "" or "any" = fastest (any worker). "auto" = best live anime model. Or pin e.g. "Nova Anime XL"
-MODEL_SETTING = os.getenv("AI_HORDE_MODEL", "any").strip()
-
-# Preferred anime/NSFW-capable models if using auto
-PREFERRED_MODELS = [
-    "Nova Anime XL",
-    "Anything v5",
-    "Anything Diffusion",
-    "Grapefruit Hentai",
-    "Hentai Diffusion",
-    "Animagine XL",
-    "Prefect Pony",
-    "Pony Diffusion XL",
-    "Flat-2D Animerge",
-    "Mistoon Anime",
-    "Rev Animated",
-    "Dreamshaper",
-    "stable_diffusion",
-]
+DEFAULT_MODEL = os.getenv("AI_HORDE_MODEL", "Nova Anime XL")
 
 ARIA_VISUAL = (
     "Mature woman, Aria, long black hair, red eyes, thin glasses, "
@@ -110,75 +91,6 @@ def build_prompt_from_history(
     return build_prompt(scene=scene)
 
 
-async def _fetch_model_status(client: httpx.AsyncClient) -> list[dict[str, Any]]:
-    try:
-        resp = await client.get(
-            f"{HORDE_API_BASE}/status/models",
-            params={"type": "image"},
-            headers={"Client-Agent": CLIENT_AGENT},
-            timeout=15.0,
-        )
-        if resp.status_code >= 400:
-            return []
-        data = resp.json()
-        return data if isinstance(data, list) else []
-    except Exception:
-        logger.exception("Failed to fetch Horde model status")
-        return []
-
-
-def _pick_models(status_list: list[dict[str, Any]]) -> tuple[list[str], str]:
-    """
-    Returns (models list for request, human label).
-    Empty models list = any worker (usually fastest).
-    """
-    setting = MODEL_SETTING.lower()
-
-    if setting in ("", "any", "auto-any", "fast"):
-        return [], "any available worker (fastest)"
-
-    # Index live models with at least 1 worker
-    live: dict[str, dict[str, Any]] = {}
-    for m in status_list:
-        name = m.get("name") or ""
-        count = int(m.get("count") or 0)
-        if name and count > 0:
-            live[name] = m
-
-    if setting not in ("auto", "best"):
-        # User pinned a specific model
-        if MODEL_SETTING in live:
-            info = live[MODEL_SETTING]
-            eta = info.get("eta", "?")
-            return [MODEL_SETTING], f"{MODEL_SETTING} (workers={info.get('count')}, eta~{eta}s)"
-        # Pinned but offline -> fall back to any
-        return [], f"{MODEL_SETTING} offline — using any worker"
-
-    # auto: pick preferred anime model with most workers / lowest eta
-    candidates: list[tuple[str, dict[str, Any]]] = []
-    for name in PREFERRED_MODELS:
-        if name in live:
-            candidates.append((name, live[name]))
-
-    if not candidates:
-        return [], "no preferred models online — any worker"
-
-    def sort_key(item: tuple[str, dict[str, Any]]) -> tuple:
-        name, info = item
-        count = int(info.get("count") or 0)
-        eta = info.get("eta")
-        try:
-            eta_v = float(eta)
-        except (TypeError, ValueError):
-            eta_v = 9999.0
-        # More workers, lower ETA first
-        return (-count, eta_v)
-
-    candidates.sort(key=sort_key)
-    name, info = candidates[0]
-    return [name], f"{name} (workers={info.get('count')}, eta~{info.get('eta')}s)"
-
-
 def _payload(
     *,
     full_prompt: str,
@@ -186,6 +98,8 @@ def _payload(
     width: int,
     height: int,
     steps: int,
+    cfg_scale: float,
+    sampler: str,
     models: list[str],
 ) -> dict[str, Any]:
     return {
@@ -194,8 +108,8 @@ def _payload(
             "width": width,
             "height": height,
             "steps": steps,
-            "cfg_scale": 5,
-            "sampler_name": "k_euler",
+            "cfg_scale": cfg_scale,
+            "sampler_name": sampler,
             "karras": True,
             "clip_skip": 2,
             "n": 1,
@@ -217,6 +131,11 @@ async def generate_image(
     nsfw: bool = True,
     on_progress: Callable[[str], Awaitable[None]] | None = None,
 ) -> bytes | None:
+    """
+    Generate via AI Horde.
+
+    Prefers Nova Anime XL at low-kudos sizes; falls back if submit is rejected.
+    """
     full_prompt = f"{prompt} ### {negative_prompt}"
     headers = {
         "apikey": _api_key(),
@@ -231,19 +150,38 @@ async def generate_image(
             except Exception:
                 pass
 
+    attempts = [
+        {
+            "label": f"{DEFAULT_MODEL} 768x768",
+            "width": 768,
+            "height": 768,
+            "steps": 25,
+            "cfg_scale": 5,
+            "sampler": "k_euler",
+            "models": [DEFAULT_MODEL],
+        },
+        {
+            "label": f"{DEFAULT_MODEL} 512x768",
+            "width": 512,
+            "height": 768,
+            "steps": 25,
+            "cfg_scale": 5,
+            "sampler": "k_euler",
+            "models": [DEFAULT_MODEL],
+        },
+        {
+            "label": "any worker 512x768",
+            "width": 512,
+            "height": 768,
+            "steps": 20,
+            "cfg_scale": 5,
+            "sampler": "k_euler",
+            "models": [],
+        },
+    ]
+
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
-            status_list = await _fetch_model_status(client)
-            models, label = _pick_models(status_list)
-            await progress(f"Using: {label}")
-
-            # Prefer small/fast jobs first so free keys don't hit KudosUpfront
-            attempts = [
-                {"label": "512x768 fast", "width": 512, "height": 768, "steps": 20, "models": models},
-                {"label": "512x512 fast", "width": 512, "height": 512, "steps": 20, "models": models},
-                {"label": "any worker 512x768", "width": 512, "height": 768, "steps": 20, "models": []},
-            ]
-
             job_id = None
             for attempt in attempts:
                 payload = _payload(
@@ -252,6 +190,8 @@ async def generate_image(
                     width=attempt["width"],
                     height=attempt["height"],
                     steps=attempt["steps"],
+                    cfg_scale=attempt["cfg_scale"],
+                    sampler=attempt["sampler"],
                     models=attempt["models"],
                 )
                 await progress(f"Submitting ({attempt['label']})…")
@@ -262,9 +202,9 @@ async def generate_image(
                 )
                 if resp.status_code >= 400:
                     logger.error(
-                        "Horde submit failed: %s %s",
+                        "Horde image submit failed: %s %s",
                         resp.status_code,
-                        resp.text[:300],
+                        resp.text,
                     )
                     continue
 
@@ -275,12 +215,12 @@ async def generate_image(
 
             if not job_id:
                 await progress(
-                    "Could not start image job (kudos/workers). "
-                    "Try again later or earn kudos at aihorde.net"
+                    "Submit rejected (need more AI Horde kudos, or workers busy). "
+                    "Earn kudos at aihorde.net or try again later."
                 )
                 return None
 
-            await progress("In queue…")
+            await progress("Queued on free workers…")
 
             elapsed = 0.0
             last_announce = 0.0
@@ -297,19 +237,17 @@ async def generate_image(
 
                 status = status_resp.json()
                 if status.get("faulted"):
-                    await progress("Worker failed this job.")
+                    logger.error("Horde image job faulted: %s", status)
+                    await progress("Generation failed on worker.")
                     return None
 
-                if elapsed - last_announce >= 15:
+                if elapsed - last_announce >= 20:
                     wait = status.get("wait_time")
                     queue = status.get("queue_position")
-                    processing = status.get("processing")
                     if wait is not None:
-                        await progress(
-                            f"Queue {queue} | ~{wait}s | processing={processing}"
-                        )
+                        await progress(f"Still working… ~{wait}s left (queue {queue})")
                     else:
-                        await progress(f"Waiting… {int(elapsed)}s")
+                        await progress(f"Still generating… {int(elapsed)}s elapsed")
                     last_announce = elapsed
 
                 if status.get("done"):
@@ -317,16 +255,15 @@ async def generate_image(
                     if not gens:
                         return None
                     img_url = gens[0].get("img")
-                    model_used = gens[0].get("model") or "unknown"
                     if not img_url:
                         return None
-                    await progress(f"Done via {model_used}. Downloading…")
+                    await progress("Downloading image…")
                     img_resp = await client.get(img_url, timeout=60.0)
                     if img_resp.status_code >= 400:
                         return None
                     return img_resp.content
 
-            await progress("Timed out (queue too long). Try /img again later.")
+            await progress("Timed out waiting for workers.")
             return None
 
     except Exception:
