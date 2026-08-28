@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Update
+from telegram.error import BadRequest, NetworkError, TimedOut
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -16,6 +17,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+from telegram.request import HTTPXRequest
 
 from bot.db import database as db
 from bot.services import image_gen, llm
@@ -63,6 +65,17 @@ ARIA_PROFILE = (
 )
 
 _suggestion_store: dict[str, tuple[str, str]] = {}
+
+
+async def _safe_answer(query, text: str | None = None) -> None:
+    """Answer callback without crashing on network timeouts."""
+    try:
+        if text:
+            await query.answer(text)
+        else:
+            await query.answer()
+    except (TimedOut, NetworkError, BadRequest) as e:
+        logger.warning("callback answer failed (ignored): %s", e)
 
 
 def _rp_keyboard(soft: str | None = None, bold: str | None = None, key: str | None = None) -> InlineKeyboardMarkup:
@@ -292,7 +305,6 @@ async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def img_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Generate image: optional text + always uses recent chat for consistency."""
     desc = " ".join(context.args).strip() if context.args else ""
 
     user = update.effective_user
@@ -311,7 +323,7 @@ async def img_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def img_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    await query.answer("Generating image from scene…")
+    await _safe_answer(query, "Generating image from scene…")
 
     user = update.effective_user
     db.upsert_user(user.id, user.username, user.first_name)
@@ -342,7 +354,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     history = db.get_recent_messages(conversation_id, limit=16)
     profile_text = _character_profile_text(character_id)
 
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    try:
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    except (TimedOut, NetworkError):
+        pass
 
     reply = await llm.generate_reply(
         user_message=text,
@@ -361,7 +376,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def continue_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    await query.answer()
+    await _safe_answer(query)
 
     user = update.effective_user
     db.upsert_user(user.id, user.username, user.first_name)
@@ -371,7 +386,10 @@ async def continue_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     history = db.get_recent_messages(conversation_id, limit=16)
     profile_text = _character_profile_text(character_id)
 
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    try:
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    except (TimedOut, NetworkError):
+        pass
 
     reply = await llm.generate_reply(
         user_message="",
@@ -391,7 +409,7 @@ async def continue_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def suggestion_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    await query.answer()
+    await _safe_answer(query)
 
     data = query.data or ""
     try:
@@ -418,7 +436,11 @@ async def suggestion_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     history = db.get_recent_messages(conversation_id, limit=16)
     profile_text = _character_profile_text(character_id)
 
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    try:
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    except (TimedOut, NetworkError):
+        pass
+
     await query.message.reply_text(f"You: {text}")
 
     reply = await llm.generate_reply(
@@ -441,7 +463,20 @@ def main() -> None:
 
     db.init_db()
 
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    # Longer timeouts help on slow/unstable networks (school/lab Wi‑Fi, etc.)
+    request = HTTPXRequest(
+        connect_timeout=30.0,
+        read_timeout=30.0,
+        write_timeout=30.0,
+        pool_timeout=30.0,
+    )
+
+    application = (
+        Application.builder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .request(request)
+        .build()
+    )
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("new", new_command))
