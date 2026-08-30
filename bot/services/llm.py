@@ -4,9 +4,6 @@ LLM service for Lucid RP Telebot.
 Providers (auto-detected):
   1. DeepSeek direct  — if DEEPSEEK_API_KEY is set
   2. OpenRouter       — if OPENROUTER_API_KEY is set
-
-DeepSeek API is OpenAI-compatible: https://api.deepseek.com
-Models: deepseek-chat (default), deepseek-reasoner
 """
 
 from __future__ import annotations
@@ -22,6 +19,11 @@ logger = logging.getLogger(__name__)
 
 _client: AsyncOpenAI | None = None
 _provider: str | None = None
+
+RATE_LIMIT_MSG = (
+    "The AI model is rate-limited right now. "
+    "Please wait about a minute, then try again."
+)
 
 CONTINUE_USER_HINT = (
     "[Continue the scene in character. Advance ONLY the current moment. "
@@ -42,7 +44,6 @@ REGENERATE_USER_HINT = (
 
 
 def _detect_provider() -> str:
-    """Prefer DeepSeek when its key is present."""
     forced = (os.getenv("LLM_PROVIDER") or "").strip().lower()
     if forced in ("deepseek", "openrouter"):
         return forced
@@ -100,7 +101,6 @@ def _get_model() -> str:
 
 
 def _get_fallback_model() -> str | None:
-    """Optional second model on the same provider."""
     provider = _detect_provider()
     primary = _get_model()
     if provider == "deepseek":
@@ -118,7 +118,6 @@ OUTPUT RULES:
 - Reply ONLY as the character. Nothing else.
 - Length: usually 2–4 short sentences (not one dry line, not a long monologue).
 - Always include atmosphere: at least one of setting/mood, body language, or a brief feeling.
-  Examples: *city lights reflect in her glass* / *shifts closer on the stool* / (a warm flicker of interest)
 - Mix: *actions*, spoken words, and brief inner feelings/thoughts.
 - Do not invent past events the user never said.
 - Never write the user's actions or dialogue.
@@ -127,7 +126,7 @@ OUTPUT RULES:
 SCENE STATE (critical):
 - Only describe acts already happening or clearly stated in the user's latest message.
 - Do NOT skip ahead (no premature penetration, climax, or location change).
-- Stay in the current location and moment.
+- Stay in the current location and moment. Never reset to an earlier location.
 
 LANGUAGE:
 - Adult content is allowed.
@@ -156,15 +155,32 @@ def _looks_like_leak(text: str) -> bool:
         "system prompt",
         "your response here",
         "let's unpack",
+        "let me unpack",
         "the user just said",
         "given aria's personality",
         "strict rules",
+        "analyze user request",
+        "current moment:",
+        "hmm... the last",
     ]
     return any(m in lowered for m in bad_markers)
 
 
+def is_system_failure_reply(text: str) -> bool:
+    """True for rate-limit / empty fallbacks that must not enter RP history."""
+    t = (text or "").strip()
+    if not t:
+        return True
+    if t == RATE_LIMIT_MSG or "rate-limited right now" in t.lower():
+        return True
+    if t.startswith("*blinks* Sorry, I lost my train of thought"):
+        return True
+    if t.startswith("Sorry, I had trouble generating a reply"):
+        return True
+    return False
+
+
 def _looks_like_bad_suggestion(text: str) -> bool:
-    """Reject generic interview / out-of-scene suggestion lines."""
     lowered = text.lower().strip()
     if not lowered or len(lowered) < 4:
         return True
@@ -177,6 +193,7 @@ def _looks_like_bad_suggestion(text: str) -> bool:
         "nice weather",
         "what's your hobby",
         "what are your hobbies",
+        "analyze user request",
     ]
     return any(b in lowered for b in bad)
 
@@ -208,7 +225,6 @@ async def generate_reply(
     is_regenerate: bool = False,
     previous_reply: str | None = None,
 ) -> str:
-    """Generate a roleplay reply via DeepSeek or OpenRouter."""
     model = _get_model()
 
     if system_prompt is None:
@@ -221,7 +237,9 @@ async def generate_reply(
         role = msg.get("role")
         content = (msg.get("content") or "").strip()
         if role in ("user", "assistant") and content:
-            if role == "assistant" and _looks_like_leak(content):
+            if role == "assistant" and (
+                _looks_like_leak(content) or is_system_failure_reply(content)
+            ):
                 continue
             messages.append({"role": role, "content": content})
 
@@ -272,10 +290,7 @@ async def generate_reply(
             try:
                 reply = await _call_model(messages=retry_messages, model=model)
             except RateLimitError:
-                return (
-                    "The AI is rate-limited right now. "
-                    "Please wait a minute and try again."
-                )
+                return RATE_LIMIT_MSG
 
         if not reply or _looks_like_leak(reply):
             return "*blinks* Sorry, I lost my train of thought. Say that again?"
@@ -284,16 +299,65 @@ async def generate_reply(
 
     except RateLimitError:
         logger.warning("LLM rate limit hit (provider=%s)", _detect_provider())
-        return (
-            "The AI model is rate-limited right now. "
-            "Please wait about a minute, then try again."
-        )
+        return RATE_LIMIT_MSG
     except Exception as e:
         logger.exception("LLM API error (provider=%s)", _detect_provider())
         return (
             "Sorry, I had trouble generating a reply. "
             f"(Error: {type(e).__name__}) Please try again in a moment."
         )
+
+
+def _history_blob(history: list[dict[str, Any]], last_assistant: str) -> str:
+    parts = [last_assistant or ""]
+    for msg in history[-8:]:
+        parts.append((msg.get("content") or "")[:200])
+    return " ".join(parts).lower()
+
+
+def _scene_defaults(history: list[dict[str, Any]], last_assistant: str) -> tuple[str, str]:
+    """Fallback Soft/Bold locked to detected scene — never random bar lines mid-intimacy."""
+    blob = _history_blob(history, last_assistant)
+
+    if any(
+        w in blob
+        for w in (
+            "shower",
+            "tub",
+            "bathroom",
+            "steam",
+            "scrub",
+            "under the water",
+            "tile",
+        )
+    ):
+        return (
+            "*keeps my hands gentle on her back* like this?",
+            "*pulls her closer under the warm water*",
+        )
+
+    if any(
+        w in blob
+        for w in (
+            "bed",
+            "apartment",
+            "naked",
+            "moan",
+            "kiss",
+            "thigh",
+            "between us",
+            "make you feel",
+        )
+    ):
+        return (
+            "*slows down and kisses her shoulder*",
+            "*pulls her tighter against me*",
+        )
+
+    return (
+        "*sits on the empty stool beside her* Mind if I join you for a drink?",
+        "*leans on the bar, voice low* I was hoping someone interesting would be up here.",
+    )
 
 
 def _history_snippet(history: list[dict[str, Any]], limit: int = 6) -> str:
@@ -303,7 +367,9 @@ def _history_snippet(history: list[dict[str, Any]], limit: int = 6) -> str:
         content = (msg.get("content") or "").strip().replace("\n", " ")
         if not content:
             continue
-        if role == "assistant" and _looks_like_leak(content):
+        if role == "assistant" and (
+            _looks_like_leak(content) or is_system_failure_reply(content)
+        ):
             continue
         label = "Aria" if role == "assistant" else "User"
         lines.append(f"{label}: {content[:180]}")
@@ -315,13 +381,7 @@ async def generate_suggestions(
     history: list[dict[str, Any]],
     last_assistant: str,
 ) -> tuple[str, str]:
-    """
-    Return two short USER next-lines that stay in the current scene:
-    (softer / slower, bolder / more intense).
-    """
-    # Scene-locked defaults — never generic interview filler
-    soft_default = "*sits on the empty stool beside her* Mind if I join you for a drink?"
-    hot_default = "*leans on the bar, voice low* I was hoping someone interesting would be up here."
+    soft_default, hot_default = _scene_defaults(history, last_assistant)
 
     model = _get_model()
     recent = _history_snippet(history, limit=6)
@@ -335,9 +395,9 @@ async def generate_suggestions(
         "- Max ~15 words each\n"
         "- First person or *action* from the USER only\n"
         "- MUST react to what Aria just said or did\n"
-        "- Do NOT invent a new location\n"
-        "- FORBIDDEN: interview questions like 'tell me more about yourself', "
-        "'where are you from', 'how was your day', random small talk off-scene\n"
+        "- Do NOT invent a new location or reset the scene\n"
+        "- FORBIDDEN: interview questions, 'tell me more about yourself', "
+        "bar-stool lines if the scene is already elsewhere\n"
         "Format EXACTLY:\n"
         "1) <soft option>\n"
         "2) <bold option>\n\n"
