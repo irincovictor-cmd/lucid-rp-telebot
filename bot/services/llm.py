@@ -163,17 +163,36 @@ def _looks_like_leak(text: str) -> bool:
     return any(m in lowered for m in bad_markers)
 
 
+def _looks_like_bad_suggestion(text: str) -> bool:
+    """Reject generic interview / out-of-scene suggestion lines."""
+    lowered = text.lower().strip()
+    if not lowered or len(lowered) < 4:
+        return True
+    bad = [
+        "tell me more about yourself",
+        "tell me about yourself",
+        "what do you do for a living",
+        "where are you from",
+        "how was your day",
+        "nice weather",
+        "what's your hobby",
+        "what are your hobbies",
+    ]
+    return any(b in lowered for b in bad)
+
+
 async def _call_model(
     *,
     messages: list[dict[str, str]],
     model: str,
     max_tokens: int = 280,
+    temperature: float = 0.85,
 ) -> str:
     client = _get_client()
     response = await client.chat.completions.create(
         model=model,
         messages=messages,
-        temperature=0.85,
+        temperature=temperature,
         max_tokens=max_tokens,
     )
     return (response.choices[0].message.content or "").strip()
@@ -218,7 +237,6 @@ async def generate_reply(
     if not messages or messages[-1].get("content") != effective_user:
         messages.append({"role": "user", "content": effective_user})
 
-    # Slightly higher temperature on regenerate for variety
     temperature_tokens = 300 if is_regenerate else 280
 
     try:
@@ -278,45 +296,80 @@ async def generate_reply(
         )
 
 
+def _history_snippet(history: list[dict[str, Any]], limit: int = 6) -> str:
+    lines: list[str] = []
+    for msg in history[-limit:]:
+        role = msg.get("role")
+        content = (msg.get("content") or "").strip().replace("\n", " ")
+        if not content:
+            continue
+        if role == "assistant" and _looks_like_leak(content):
+            continue
+        label = "Aria" if role == "assistant" else "User"
+        lines.append(f"{label}: {content[:180]}")
+    return "\n".join(lines) if lines else "(scene just started at a rooftop bar)"
+
+
 async def generate_suggestions(
     *,
     history: list[dict[str, Any]],
     last_assistant: str,
 ) -> tuple[str, str]:
     """
-    Return two short first-person user action suggestions: (softer, more intense).
-    Falls back to safe defaults on failure.
+    Return two short USER next-lines that stay in the current scene:
+    (softer / slower, bolder / more intense).
     """
-    soft_default = "*smiles and keeps things light* Tell me more about yourself."
-    hot_default = "*leans closer* What if we take this somewhere more private?"
+    # Scene-locked defaults — never generic interview filler
+    soft_default = "*sits on the empty stool beside her* Mind if I join you for a drink?"
+    hot_default = "*leans on the bar, voice low* I was hoping someone interesting would be up here."
 
     model = _get_model()
+    recent = _history_snippet(history, limit=6)
+
     prompt = (
-        "Based on this roleplay moment, write TWO short options the USER could say or do next.\n"
+        "You write the USER's next line in an ongoing adult roleplay.\n"
+        "Write TWO options that continue THIS exact scene — same place, mood, and topic.\n"
+        "Rules:\n"
+        "- Soft = gentler / slower, still in-scene\n"
+        "- Bold = flirty or more intense, still in-scene\n"
+        "- Max ~15 words each\n"
+        "- First person or *action* from the USER only\n"
+        "- MUST react to what Aria just said or did\n"
+        "- Do NOT invent a new location\n"
+        "- FORBIDDEN: interview questions like 'tell me more about yourself', "
+        "'where are you from', 'how was your day', random small talk off-scene\n"
         "Format EXACTLY:\n"
-        "1) <softer / slower option, max 15 words>\n"
-        "2) <bolder / more intense option, max 15 words>\n"
-        "Write them as the user's action or line (first person or *action*). No extra text.\n\n"
-        f"Last character line:\n{last_assistant[:400]}\n"
+        "1) <soft option>\n"
+        "2) <bold option>\n\n"
+        f"Recent chat:\n{recent}\n\n"
+        f"Aria's last line:\n{last_assistant[:400]}\n"
     )
 
     messages = [
         {
             "role": "system",
-            "content": "You write short interactive story choices for adult roleplay. Output only the two numbered lines.",
+            "content": (
+                "You write short in-scene user reply options for adult roleplay. "
+                "Stay in the current moment. Output only the two numbered lines."
+            ),
         },
         {"role": "user", "content": prompt},
     ]
 
     try:
-        text = await _call_model(messages=messages, model=model, max_tokens=80)
+        text = await _call_model(
+            messages=messages,
+            model=model,
+            max_tokens=100,
+            temperature=0.7,
+        )
         lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
         opts: list[str] = []
         for ln in lines:
             cleaned = re.sub(r"^\s*[12][\).:\-]\s*", "", ln).strip()
             cleaned = cleaned.strip("\"'")
-            if cleaned:
-                opts.append(cleaned[:80])
+            if cleaned and not _looks_like_bad_suggestion(cleaned):
+                opts.append(cleaned[:90])
         if len(opts) >= 2:
             return opts[0], opts[1]
         if len(opts) == 1:
