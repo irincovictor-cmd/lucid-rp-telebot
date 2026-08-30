@@ -1,8 +1,12 @@
 """
-OpenRouter LLM service for Lucid RP Telebot.
+LLM service for Lucid RP Telebot.
 
-OpenAI-compatible API at https://openrouter.ai/api/v1
-Default: openrouter/free (auto-picks an available free model).
+Providers (auto-detected):
+  1. DeepSeek direct  — if DEEPSEEK_API_KEY is set
+  2. OpenRouter       — if OPENROUTER_API_KEY is set
+
+DeepSeek API is OpenAI-compatible: https://api.deepseek.com
+Models: deepseek-chat (default), deepseek-reasoner
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ from openai import AsyncOpenAI, RateLimitError
 logger = logging.getLogger(__name__)
 
 _client: AsyncOpenAI | None = None
+_provider: str | None = None
 
 CONTINUE_USER_HINT = (
     "[Continue the scene in character. Advance ONLY the current moment. "
@@ -26,33 +31,72 @@ CONTINUE_USER_HINT = (
 )
 
 
+def _detect_provider() -> str:
+    """Prefer DeepSeek when its key is present."""
+    forced = (os.getenv("LLM_PROVIDER") or "").strip().lower()
+    if forced in ("deepseek", "openrouter"):
+        return forced
+    if os.getenv("DEEPSEEK_API_KEY"):
+        return "deepseek"
+    if os.getenv("OPENROUTER_API_KEY"):
+        return "openrouter"
+    raise ValueError(
+        "No LLM API key set. Add DEEPSEEK_API_KEY or OPENROUTER_API_KEY to .env"
+    )
+
+
 def _get_client() -> AsyncOpenAI:
-    global _client
-    if _client is None:
-        api_key = os.getenv("OPENROUTER_API_KEY")
+    global _client, _provider
+    provider = _detect_provider()
+    if _client is not None and _provider == provider:
+        return _client
+
+    if provider == "deepseek":
+        api_key = os.getenv("DEEPSEEK_API_KEY")
         if not api_key:
-            raise ValueError(
-                "OPENROUTER_API_KEY is not set in .env. "
-                "Get a free key at https://openrouter.ai/keys"
-            )
+            raise ValueError("DEEPSEEK_API_KEY is not set in .env")
         _client = AsyncOpenAI(
             api_key=api_key,
-            base_url="https://openrouter.ai/api/v1",
-            default_headers={
-                "HTTP-Referer": "https://github.com/irincovictor-cmd/lucid-rp-telebot",
-                "X-Title": "Lucid RP Telebot",
-            },
+            base_url="https://api.deepseek.com",
         )
+        _provider = "deepseek"
+        logger.info("LLM provider: DeepSeek")
+        return _client
+
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        raise ValueError(
+            "OPENROUTER_API_KEY is not set in .env. "
+            "Get a free key at https://openrouter.ai/keys"
+        )
+    _client = AsyncOpenAI(
+        api_key=api_key,
+        base_url="https://openrouter.ai/api/v1",
+        default_headers={
+            "HTTP-Referer": "https://github.com/irincovictor-cmd/lucid-rp-telebot",
+            "X-Title": "Lucid RP Telebot",
+        },
+    )
+    _provider = "openrouter"
+    logger.info("LLM provider: OpenRouter")
     return _client
 
 
 def _get_model() -> str:
+    provider = _detect_provider()
+    if provider == "deepseek":
+        return os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
     return os.getenv("OPENROUTER_MODEL", "openrouter/free")
 
 
 def _get_fallback_model() -> str | None:
+    """Optional second model on the same provider."""
+    provider = _detect_provider()
     primary = _get_model()
-    fallback = os.getenv("OPENROUTER_FALLBACK_MODEL", "openrouter/free")
+    if provider == "deepseek":
+        fallback = os.getenv("DEEPSEEK_FALLBACK_MODEL", "").strip()
+    else:
+        fallback = os.getenv("OPENROUTER_FALLBACK_MODEL", "openrouter/free").strip()
     if fallback and fallback != primary:
         return fallback
     return None
@@ -130,7 +174,7 @@ async def generate_reply(
     system_prompt: str | None = None,
     is_continue: bool = False,
 ) -> str:
-    """Generate a roleplay reply via OpenRouter."""
+    """Generate a roleplay reply via DeepSeek or OpenRouter."""
     model = _get_model()
 
     if system_prompt is None:
@@ -177,7 +221,7 @@ async def generate_reply(
                 reply = await _call_model(messages=retry_messages, model=model)
             except RateLimitError:
                 return (
-                    "The free AI is rate-limited right now. "
+                    "The AI is rate-limited right now. "
                     "Please wait a minute and try again."
                 )
 
@@ -187,13 +231,13 @@ async def generate_reply(
         return reply
 
     except RateLimitError:
-        logger.warning("OpenRouter rate limit hit")
+        logger.warning("LLM rate limit hit (provider=%s)", _detect_provider())
         return (
-            "The free AI model is rate-limited right now. "
+            "The AI model is rate-limited right now. "
             "Please wait about a minute, then try again."
         )
     except Exception as e:
-        logger.exception("OpenRouter API error")
+        logger.exception("LLM API error (provider=%s)", _detect_provider())
         return (
             "Sorry, I had trouble generating a reply. "
             f"(Error: {type(e).__name__}) Please try again in a moment."
