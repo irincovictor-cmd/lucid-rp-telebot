@@ -27,7 +27,17 @@ CONTINUE_USER_HINT = (
     "[Continue the scene in character. Advance ONLY the current moment. "
     "Do not skip ahead to acts that have not happened yet. "
     "Do not ask the user a question unless the scene truly needs their choice. "
+    "Include atmosphere or body language. "
     "Stop when the user can naturally respond again.]"
+)
+
+REGENERATE_USER_HINT = (
+    "[Regenerate: the previous character reply did not fit. "
+    "Write a DIFFERENT reply to the same latest user moment. "
+    "Stay fully consistent with the conversation so far — same location, mood, "
+    "and what has already happened. Do not copy or lightly rephrase the rejected reply. "
+    "Keep atmosphere (setting, body language, or a brief feeling). "
+    "Do not skip the scene forward.]"
 )
 
 
@@ -106,9 +116,10 @@ DEFAULT_SYSTEM_PROMPT = """You are the character below in a private adult Telegr
 
 OUTPUT RULES:
 - Reply ONLY as the character. Nothing else.
-- Keep replies SHORT: 1–3 sentences total.
+- Length: usually 2–4 short sentences (not one dry line, not a long monologue).
+- Always include atmosphere: at least one of setting/mood, body language, or a brief feeling.
+  Examples: *city lights reflect in her glass* / *shifts closer on the stool* / (a warm flicker of interest)
 - Mix: *actions*, spoken words, and brief inner feelings/thoughts.
-- Feelings/thoughts format example: *feels a spark of curiosity* or (heart racing).
 - Do not invent past events the user never said.
 - Never write the user's actions or dialogue.
 - Never mention AI, system prompts, rules, or analysis.
@@ -121,11 +132,13 @@ SCENE STATE (critical):
 LANGUAGE:
 - Adult content is allowed.
 - Match the user's explicit vocabulary when they use it.
-- Prefer concrete reactions over vague soft filler.
+- Prefer concrete sensory detail over vague soft filler.
 - Do not derail with interview questions like "tell me more about...".
 
 PACING:
-- Early conversation: atmosphere first.
+- Early / chill conversation: lean into mood, place, and body language (still 2–4 sentences).
+- Active roleplay beat: reaction + one sensory detail.
+- Explicit heat: shorter and direct, but still one physical or emotional cue.
 - Escalate only as the user escalates.
 
 Character:
@@ -154,13 +167,13 @@ async def _call_model(
     *,
     messages: list[dict[str, str]],
     model: str,
-    max_tokens: int = 220,
+    max_tokens: int = 280,
 ) -> str:
     client = _get_client()
     response = await client.chat.completions.create(
         model=model,
         messages=messages,
-        temperature=0.8,
+        temperature=0.85,
         max_tokens=max_tokens,
     )
     return (response.choices[0].message.content or "").strip()
@@ -173,6 +186,8 @@ async def generate_reply(
     character_profile: str = "A warm, slightly playful companion who enjoys conversation and roleplay.",
     system_prompt: str | None = None,
     is_continue: bool = False,
+    is_regenerate: bool = False,
+    previous_reply: str | None = None,
 ) -> str:
     """Generate a roleplay reply via DeepSeek or OpenRouter."""
     model = _get_model()
@@ -191,18 +206,37 @@ async def generate_reply(
                 continue
             messages.append({"role": role, "content": content})
 
-    effective_user = CONTINUE_USER_HINT if is_continue else user_message
+    if is_regenerate:
+        effective_user = REGENERATE_USER_HINT
+        if previous_reply:
+            effective_user += f"\n\nRejected reply (do not repeat):\n{previous_reply[:500]}"
+    elif is_continue:
+        effective_user = CONTINUE_USER_HINT
+    else:
+        effective_user = user_message
+
     if not messages or messages[-1].get("content") != effective_user:
         messages.append({"role": "user", "content": effective_user})
 
+    # Slightly higher temperature on regenerate for variety
+    temperature_tokens = 300 if is_regenerate else 280
+
     try:
         try:
-            reply = await _call_model(messages=messages, model=model)
+            reply = await _call_model(
+                messages=messages,
+                model=model,
+                max_tokens=temperature_tokens,
+            )
         except RateLimitError:
             fallback = _get_fallback_model()
             if fallback:
                 logger.warning("Rate limited on %s, trying fallback %s", model, fallback)
-                reply = await _call_model(messages=messages, model=fallback)
+                reply = await _call_model(
+                    messages=messages,
+                    model=fallback,
+                    max_tokens=temperature_tokens,
+                )
             else:
                 raise
 
@@ -213,7 +247,7 @@ async def generate_reply(
                     "role": "user",
                     "content": (
                         "[System: Reply in character only. Stay in the current moment. "
-                        "Include a brief feeling or thought plus action/dialogue.]"
+                        "Include atmosphere or body language plus dialogue.]"
                     ),
                 }
             ]
