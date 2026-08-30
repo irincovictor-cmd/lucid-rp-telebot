@@ -57,7 +57,7 @@ BOT_WELCOME = (
     "/help — how to use\n"
     "/new — reset memory\n"
     "/img — image from current scene (or `/img your details`)\n"
-    "Images: local Aria intro art + optional AI Horde for /img"
+    "Bot avatar: data/aria/profile.png · Intro gallery: intro_1–3"
 )
 
 ARIA_SCENE_INTRO = (
@@ -120,12 +120,12 @@ def _find_aria_profile() -> Path | None:
 
 
 def _find_aria_intro_images() -> list[Path]:
+    """Only intro_* files — profile.png is the bot avatar, not chat media."""
     found: list[Path] = []
     if not ARIA_DIR.is_dir():
         return found
     for pattern in ARIA_INTRO_GLOBS:
         found.extend(sorted(ARIA_DIR.glob(pattern)))
-    # de-dupe, max 3
     uniq: list[Path] = []
     seen = set()
     for p in found:
@@ -139,50 +139,64 @@ def _find_aria_intro_images() -> list[Path]:
     return uniq
 
 
-async def _send_aria_intro_gallery(update: Update) -> None:
-    """Send local profile + up to 3 intro images. Falls back to Horde profile if missing."""
-    profile = _find_aria_profile()
-    intros = _find_aria_intro_images()
+async def _set_bot_profile_photo(application: Application) -> None:
+    """Set Telegram bot avatar from data/aria/profile.* (not sent in chat)."""
+    path = _find_aria_profile()
+    if not path:
+        logger.info("No data/aria/profile.* found — bot avatar unchanged")
+        return
 
-    paths: list[Path] = []
-    if profile:
-        paths.append(profile)
-    for p in intros:
-        if profile and p.resolve() == profile.resolve():
-            continue
-        paths.append(p)
-    paths = paths[:4]
+    try:
+        from telegram import InputProfilePhotoStatic
 
-    if not paths:
-        # Legacy: try AI Horde / cached profile only if no local art
-        status = await update.message.reply_text(
-            "No local Aria images in data/aria/ — trying free portrait…"
+        with path.open("rb") as f:
+            await application.bot.set_my_profile_photo(
+                photo=InputProfilePhotoStatic(photo=f)
+            )
+        logger.info("Bot Telegram profile photo set from %s", path.name)
+        return
+    except ImportError:
+        logger.warning(
+            "InputProfilePhotoStatic not available in this python-telegram-bot version"
+        )
+    except Exception as e:
+        logger.warning("set_my_profile_photo failed: %s", e)
+
+    # Fallback: raw Bot API (static profile photo)
+    try:
+        import httpx
+
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setMyProfilePhoto"
+        with path.open("rb") as f:
+            # Telegram expects photo as InputProfilePhoto JSON + file attach
+            files = {"photo": (path.name, f, "image/jpeg")}
+            data = {"photo": '{"type":"static","photo":"attach://photo"}'}
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                resp = await client.post(url, data=data, files=files)
+        if resp.status_code == 200 and resp.json().get("ok"):
+            logger.info("Bot Telegram profile photo set via raw API from %s", path.name)
+        else:
+            logger.warning(
+                "Could not set bot avatar (%s). "
+                "Open @BotFather → /setuserpic and upload profile.png manually.",
+                resp.text[:300],
+            )
+    except Exception as e:
+        logger.warning(
+            "Bot avatar not set (%s). Use @BotFather /setuserpic with profile.png",
+            e,
         )
 
-        async def on_progress(msg: str) -> None:
-            try:
-                await status.edit_text(f"Portrait: {msg}")
-            except Exception:
-                pass
 
-        path = await image_gen.ensure_aria_profile_image(on_progress=on_progress)
-        if path and path.exists():
-            try:
-                await status.delete()
-            except Exception:
-                pass
-            with path.open("rb") as f:
-                await update.message.reply_photo(
-                    photo=InputFile(f, filename=path.name),
-                    caption="Aria",
-                )
-        else:
-            try:
-                await status.edit_text(
-                    "Add images to data/aria/ (profile.png + intro_1–3) for /start portraits."
-                )
-            except Exception:
-                pass
+async def _send_aria_intro_gallery(update: Update) -> None:
+    """Send intro_1–3 in chat only (profile.png is bot avatar, not posted here)."""
+    paths = _find_aria_intro_images()
+
+    if not paths:
+        await update.message.reply_text(
+            "Add `intro_1.png`–`intro_3.png` under data/aria/ to show Aria in chat.\n"
+            "`profile.png` is used only as the bot’s Telegram avatar."
+        )
         return
 
     if len(paths) == 1:
@@ -316,7 +330,6 @@ async def _reply_with_suggestions(
     reply: str,
     history: list,
 ) -> None:
-    # Never attach Soft/Bold to system failure messages
     if llm.is_system_failure_reply(reply):
         await target_message.reply_text(reply)
         return
@@ -371,14 +384,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "**How to use**\n\n"
         "Reply in character, or use buttons.\n\n"
         "**Buttons**\n"
-        "• Continue — Aria advances the current moment\n"
-        "• Change — new alternate reply (same scene, different take)\n"
-        "• Soft / Bold — one-shot suggestions for *this* moment\n"
-        "• Image — generate from current scene (AI Horde)\n\n"
-        "**Local Aria art**\n"
-        "Put files in `data/aria/`:\n"
-        "• `profile.png` (or .jpg) — main portrait\n"
-        "• `intro_1.png` … `intro_3.png` — extra intro angles\n"
+        "• Continue / Change / Soft / Bold / Image\n\n"
+        "**Aria images**\n"
+        "• `data/aria/profile.png` → **bot Telegram avatar** (not posted in chat)\n"
+        "• `data/aria/intro_1.png` … `intro_3.png` → shown on /start\n"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
@@ -573,7 +582,6 @@ async def suggestion_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.message.reply_text("That suggestion expired. Send a message instead.")
         return
 
-    # One-shot: pop so the same Soft/Bold cannot be spammed
     pair = _suggestion_store.pop(key, None)
     if not pair:
         await query.message.reply_text("That suggestion expired. Send a message instead.")
@@ -612,6 +620,10 @@ async def suggestion_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 
+async def _post_init(application: Application) -> None:
+    await _set_bot_profile_photo(application)
+
+
 def main() -> None:
     if not TELEGRAM_BOT_TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN is not set in .env file")
@@ -630,6 +642,7 @@ def main() -> None:
         Application.builder()
         .token(TELEGRAM_BOT_TOKEN)
         .request(request)
+        .post_init(_post_init)
         .build()
     )
     application.add_handler(CommandHandler("start", start))
