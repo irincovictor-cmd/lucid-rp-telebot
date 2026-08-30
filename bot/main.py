@@ -2,12 +2,13 @@ import json
 import logging
 import os
 from io import BytesIO
+from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile, InputMediaPhoto, Update
 from telegram.error import BadRequest, NetworkError, TimedOut
 from telegram.ext import (
     Application,
@@ -30,6 +31,19 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
+# Local Aria art (copy your files here — see data/aria/README)
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ARIA_DIR = PROJECT_ROOT / "data" / "aria"
+ARIA_PROFILE_CANDIDATES = (
+    "profile.png",
+    "profile.jpg",
+    "profile.jpeg",
+    "profile.webp",
+    "Profile.png",
+    "Profile.jpg",
+)
+ARIA_INTRO_GLOBS = ("intro_*.png", "intro_*.jpg", "intro_*.jpeg", "intro_*.webp")
+
 BOT_WELCOME = (
     "💖 **HoneyChat / Lucid RP** — private 18+ AI roleplay\n\n"
     "Talk dirty or deep. Stay in a scene.\n\n"
@@ -43,7 +57,7 @@ BOT_WELCOME = (
     "/help — how to use\n"
     "/new — reset memory\n"
     "/img — image from current scene (or `/img your details`)\n"
-    "Images: 2D anime style via AI Horde (free, can be slow)"
+    "Images: local Aria intro art + optional AI Horde for /img"
 )
 
 ARIA_SCENE_INTRO = (
@@ -62,14 +76,14 @@ ARIA_PROFILE = (
     "Setting: Rooftop bar after midnight; city lights; intimate, low-key mood.\n"
     "Personality: Warm, curious, slightly teasing. Builds atmosphere before escalating.\n"
     "Tone: Short-to-medium replies with *actions*, dialogue, and atmosphere.\n"
-    "Appearance: 2D anime; long black hair; red eyes; thin glasses."
+    "Appearance: 2D anime; long black hair; red eyes; thin glasses; low-cut evening top.\n"
+    "Do not invent a different job, outfit, or backstory unless the user establishes it."
 )
 
 _suggestion_store: dict[str, tuple[str, str]] = {}
 
 
 async def _safe_answer(query, text: str | None = None) -> None:
-    """Answer callback without crashing on network timeouts."""
     try:
         if text:
             await query.answer(text)
@@ -97,6 +111,105 @@ def _rp_keyboard(soft: str | None = None, bold: str | None = None, key: str | No
     return InlineKeyboardMarkup(rows)
 
 
+def _find_aria_profile() -> Path | None:
+    for name in ARIA_PROFILE_CANDIDATES:
+        p = ARIA_DIR / name
+        if p.is_file() and p.stat().st_size > 500:
+            return p
+    return None
+
+
+def _find_aria_intro_images() -> list[Path]:
+    found: list[Path] = []
+    if not ARIA_DIR.is_dir():
+        return found
+    for pattern in ARIA_INTRO_GLOBS:
+        found.extend(sorted(ARIA_DIR.glob(pattern)))
+    # de-dupe, max 3
+    uniq: list[Path] = []
+    seen = set()
+    for p in found:
+        if p.resolve() in seen:
+            continue
+        if p.is_file() and p.stat().st_size > 500:
+            seen.add(p.resolve())
+            uniq.append(p)
+        if len(uniq) >= 3:
+            break
+    return uniq
+
+
+async def _send_aria_intro_gallery(update: Update) -> None:
+    """Send local profile + up to 3 intro images. Falls back to Horde profile if missing."""
+    profile = _find_aria_profile()
+    intros = _find_aria_intro_images()
+
+    paths: list[Path] = []
+    if profile:
+        paths.append(profile)
+    for p in intros:
+        if profile and p.resolve() == profile.resolve():
+            continue
+        paths.append(p)
+    paths = paths[:4]
+
+    if not paths:
+        # Legacy: try AI Horde / cached profile only if no local art
+        status = await update.message.reply_text(
+            "No local Aria images in data/aria/ — trying free portrait…"
+        )
+
+        async def on_progress(msg: str) -> None:
+            try:
+                await status.edit_text(f"Portrait: {msg}")
+            except Exception:
+                pass
+
+        path = await image_gen.ensure_aria_profile_image(on_progress=on_progress)
+        if path and path.exists():
+            try:
+                await status.delete()
+            except Exception:
+                pass
+            with path.open("rb") as f:
+                await update.message.reply_photo(
+                    photo=InputFile(f, filename=path.name),
+                    caption="Aria",
+                )
+        else:
+            try:
+                await status.edit_text(
+                    "Add images to data/aria/ (profile.png + intro_1–3) for /start portraits."
+                )
+            except Exception:
+                pass
+        return
+
+    if len(paths) == 1:
+        with paths[0].open("rb") as f:
+            await update.message.reply_photo(
+                photo=InputFile(f, filename=paths[0].name),
+                caption="Aria",
+            )
+        return
+
+    media: list[InputMediaPhoto] = []
+    handles = []
+    try:
+        for i, p in enumerate(paths):
+            fh = p.open("rb")
+            handles.append(fh)
+            cap = "Aria" if i == 0 else None
+            media.append(InputMediaPhoto(media=fh, caption=cap))
+        await update.message.reply_media_group(media=media)
+    finally:
+        for fh in handles:
+            try:
+                fh.close()
+            except Exception:
+                pass
+
+
 def _get_or_create_default_character() -> int:
     conn = db.get_conn()
     row = conn.execute(
@@ -116,7 +229,10 @@ def _get_or_create_default_character() -> int:
                 "Matches the user's pace. Does not invent past shared history."
             ),
             "tone": "Short-to-medium replies with actions, dialogue, and atmosphere.",
-            "appearance": "2D anime; long black hair; red eyes; thin glasses",
+            "appearance": (
+                "2D anime; long black hair; red eyes; thin glasses; "
+                "low-cut elegant evening top"
+            ),
         },
         is_public=True,
     )
@@ -140,37 +256,6 @@ def _character_profile_text(character_id: int) -> str:
         except Exception:
             pass
     return ARIA_PROFILE
-
-
-async def _send_aria_profile(update: Update) -> None:
-    status = await update.message.reply_text(
-        "Loading Aria's portrait (2D anime)… first time can take 1–3 min on free workers."
-    )
-
-    async def on_progress(msg: str) -> None:
-        try:
-            await status.edit_text(f"Portrait: {msg}")
-        except Exception:
-            pass
-
-    path = await image_gen.ensure_aria_profile_image(on_progress=on_progress)
-    if path and path.exists():
-        try:
-            await status.delete()
-        except Exception:
-            pass
-        with path.open("rb") as f:
-            await update.message.reply_photo(
-                photo=InputFile(f, filename="aria.webp"),
-                caption="Aria",
-            )
-    else:
-        try:
-            await status.edit_text(
-                "Portrait unavailable right now — free image workers busy. Try /start later."
-            )
-        except Exception:
-            pass
 
 
 async def _generate_and_send_image(
@@ -231,6 +316,11 @@ async def _reply_with_suggestions(
     reply: str,
     history: list,
 ) -> None:
+    # Never attach Soft/Bold to system failure messages
+    if llm.is_system_failure_reply(reply):
+        await target_message.reply_text(reply)
+        return
+
     soft, bold = await llm.generate_suggestions(history=history, last_assistant=reply)
     key = f"{conversation_id}_{abs(hash(reply)) % 10_000_000}"
     _suggestion_store[key] = (soft, bold)
@@ -244,12 +334,17 @@ async def _reply_with_suggestions(
     )
 
 
+async def _save_assistant_if_ok(conversation_id: int, reply: str) -> None:
+    if not llm.is_system_failure_reply(reply) and not llm._looks_like_leak(reply):
+        db.add_message(conversation_id, "assistant", reply)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     db.upsert_user(user.id, user.username, user.first_name)
 
     await update.message.reply_text(BOT_WELCOME, parse_mode="Markdown")
-    await _send_aria_profile(update)
+    await _send_aria_intro_gallery(update)
     await update.message.reply_text(
         ARIA_SCENE_INTRO,
         parse_mode="Markdown",
@@ -278,12 +373,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "**Buttons**\n"
         "• Continue — Aria advances the current moment\n"
         "• Change — new alternate reply (same scene, different take)\n"
-        "• Soft / Bold — suggested things you can say\n"
-        "• Image — 2D anime from the current scene\n\n"
-        "**Images**\n"
-        "• `/img` — from chat history\n"
-        "• `/img torn stockings, glasses` — add details\n\n"
-        "Free image queue can take 30s–3min."
+        "• Soft / Bold — one-shot suggestions for *this* moment\n"
+        "• Image — generate from current scene (AI Horde)\n\n"
+        "**Local Aria art**\n"
+        "Put files in `data/aria/`:\n"
+        "• `profile.png` (or .jpg) — main portrait\n"
+        "• `intro_1.png` … `intro_3.png` — extra intro angles\n"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
@@ -298,7 +393,7 @@ async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     db.add_message(conversation_id, "assistant", ARIA_SCENE_INTRO)
     await update.message.reply_text("Memory cleared. Starting fresh with Aria…")
-    await _send_aria_profile(update)
+    await _send_aria_intro_gallery(update)
     await update.message.reply_text(
         ARIA_SCENE_INTRO,
         parse_mode="Markdown",
@@ -375,7 +470,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         character_profile=profile_text,
     )
 
-    db.add_message(conversation_id, "assistant", reply)
+    await _save_assistant_if_ok(conversation_id, reply)
     await _reply_with_suggestions(
         target_message=update.message,
         conversation_id=conversation_id,
@@ -408,7 +503,7 @@ async def continue_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         is_continue=True,
     )
 
-    db.add_message(conversation_id, "assistant", reply)
+    await _save_assistant_if_ok(conversation_id, reply)
     await _reply_with_suggestions(
         target_message=query.message,
         conversation_id=conversation_id,
@@ -418,7 +513,6 @@ async def continue_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 async def change_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Regenerate a different assistant reply for the same moment, using full chat context."""
     query = update.callback_query
     await _safe_answer(query, "Rewriting reply…")
 
@@ -435,7 +529,6 @@ async def change_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     previous_reply = ""
-    # Drop the last assistant message so we regenerate that beat; keep everything before it.
     if history[-1].get("role") == "assistant":
         previous_reply = (history[-1].get("content") or "").strip()
         history_for_model = history[:-1]
@@ -459,7 +552,7 @@ async def change_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         previous_reply=previous_reply or None,
     )
 
-    db.add_message(conversation_id, "assistant", reply)
+    await _save_assistant_if_ok(conversation_id, reply)
     await _reply_with_suggestions(
         target_message=query.message,
         conversation_id=conversation_id,
@@ -480,7 +573,8 @@ async def suggestion_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.message.reply_text("That suggestion expired. Send a message instead.")
         return
 
-    pair = _suggestion_store.get(key)
+    # One-shot: pop so the same Soft/Bold cannot be spammed
+    pair = _suggestion_store.pop(key, None)
     if not pair:
         await query.message.reply_text("That suggestion expired. Send a message instead.")
         return
@@ -509,7 +603,7 @@ async def suggestion_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         history=history[:-1],
         character_profile=profile_text,
     )
-    db.add_message(conversation_id, "assistant", reply)
+    await _save_assistant_if_ok(conversation_id, reply)
     await _reply_with_suggestions(
         target_message=query.message,
         conversation_id=conversation_id,
@@ -523,8 +617,8 @@ def main() -> None:
         raise ValueError("TELEGRAM_BOT_TOKEN is not set in .env file")
 
     db.init_db()
+    ARIA_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Longer timeouts help on slow/unstable networks (school/lab Wi‑Fi, etc.)
     request = HTTPXRequest(
         connect_timeout=30.0,
         read_timeout=30.0,
@@ -549,6 +643,7 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("Bot is starting...")
+    logger.info("Aria art folder: %s", ARIA_DIR)
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
