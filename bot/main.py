@@ -36,6 +36,7 @@ BOT_WELCOME = (
     "⚠️ Adults only (18+).\n\n"
     "Buttons under replies:\n"
     "• **Continue** — advance the scene\n"
+    "• **Change** — different reply for the same moment\n"
     "• **Soft / Bold** — suggested replies if you're stuck\n\n"
     "Commands:\n"
     "/start — welcome + meet Aria\n"
@@ -60,7 +61,7 @@ ARIA_PROFILE = (
     "Name: Aria\n"
     "Setting: Rooftop bar after midnight; city lights; intimate, low-key mood.\n"
     "Personality: Warm, curious, slightly teasing. Builds atmosphere before escalating.\n"
-    "Tone: Short replies with *actions*, dialogue, and brief feelings/thoughts.\n"
+    "Tone: Short-to-medium replies with *actions*, dialogue, and atmosphere.\n"
     "Appearance: 2D anime; long black hair; red eyes; thin glasses."
 )
 
@@ -79,7 +80,12 @@ async def _safe_answer(query, text: str | None = None) -> None:
 
 
 def _rp_keyboard(soft: str | None = None, bold: str | None = None, key: str | None = None) -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton("Continue ▶", callback_data="rp_continue")]]
+    rows = [
+        [
+            InlineKeyboardButton("Continue ▶", callback_data="rp_continue"),
+            InlineKeyboardButton("Change 🔄", callback_data="rp_change"),
+        ]
+    ]
     if soft and bold and key:
         rows.append(
             [
@@ -109,7 +115,7 @@ def _get_or_create_default_character() -> int:
                 "Warm, curious, slightly teasing. Builds atmosphere before escalating. "
                 "Matches the user's pace. Does not invent past shared history."
             ),
-            "tone": "Short replies with actions, dialogue, and brief feelings.",
+            "tone": "Short-to-medium replies with actions, dialogue, and atmosphere.",
             "appearance": "2D anime; long black hair; red eyes; thin glasses",
         },
         is_public=True,
@@ -269,11 +275,15 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     help_text = (
         "**How to use**\n\n"
         "Reply in character, or use buttons.\n\n"
-        "**Images (2D anime)**\n"
-        "• `/img` — generate from current chat scene\n"
-        "• `/img torn stockings, glasses, on bed` — add your details\n"
-        "• **Image** button under replies — same as `/img`\n\n"
-        "Free queue can take 30s–3min; status messages will update."
+        "**Buttons**\n"
+        "• Continue — Aria advances the current moment\n"
+        "• Change — new alternate reply (same scene, different take)\n"
+        "• Soft / Bold — suggested things you can say\n"
+        "• Image — 2D anime from the current scene\n\n"
+        "**Images**\n"
+        "• `/img` — from chat history\n"
+        "• `/img torn stockings, glasses` — add details\n\n"
+        "Free image queue can take 30s–3min."
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
@@ -407,6 +417,57 @@ async def continue_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     )
 
 
+async def change_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Regenerate a different assistant reply for the same moment, using full chat context."""
+    query = update.callback_query
+    await _safe_answer(query, "Rewriting reply…")
+
+    user = update.effective_user
+    db.upsert_user(user.id, user.username, user.first_name)
+
+    character_id = _get_or_create_default_character()
+    conversation_id = db.get_or_create_conversation(user.id, character_id)
+    history = db.get_recent_messages(conversation_id, limit=16)
+    profile_text = _character_profile_text(character_id)
+
+    if not history:
+        await query.message.reply_text("Nothing to change yet — send a message first.")
+        return
+
+    previous_reply = ""
+    # Drop the last assistant message so we regenerate that beat; keep everything before it.
+    if history[-1].get("role") == "assistant":
+        previous_reply = (history[-1].get("content") or "").strip()
+        history_for_model = history[:-1]
+    else:
+        history_for_model = history
+
+    if not history_for_model:
+        await query.message.reply_text("Nothing to change yet — send a message first.")
+        return
+
+    try:
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    except (TimedOut, NetworkError):
+        pass
+
+    reply = await llm.generate_reply(
+        user_message="",
+        history=history_for_model,
+        character_profile=profile_text,
+        is_regenerate=True,
+        previous_reply=previous_reply or None,
+    )
+
+    db.add_message(conversation_id, "assistant", reply)
+    await _reply_with_suggestions(
+        target_message=query.message,
+        conversation_id=conversation_id,
+        reply=reply,
+        history=history_for_model + [{"role": "assistant", "content": reply}],
+    )
+
+
 async def suggestion_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await _safe_answer(query)
@@ -482,6 +543,7 @@ def main() -> None:
     application.add_handler(CommandHandler("new", new_command))
     application.add_handler(CommandHandler("img", img_command))
     application.add_handler(CallbackQueryHandler(continue_callback, pattern="^rp_continue$"))
+    application.add_handler(CallbackQueryHandler(change_callback, pattern="^rp_change$"))
     application.add_handler(CallbackQueryHandler(suggestion_callback, pattern="^rp_sugg:"))
     application.add_handler(CallbackQueryHandler(img_callback, pattern="^rp_img$"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
