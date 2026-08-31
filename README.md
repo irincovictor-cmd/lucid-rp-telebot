@@ -7,22 +7,39 @@ Inspired by LucidDreams-style experiences.
 
 ---
 
-## Current Status (Updated Aug 28, 2026)
+## Current Status (Updated Aug 31, 2026)
 
 ### Working
-- [x] OpenRouter roleplay + SQLite memory
+- [x] OpenRouter / optional DeepSeek roleplay + SQLite memory
 - [x] Aria character + rooftop intro
-- [x] **Continue** button
-- [x] **Soft / Bold** suggestion buttons (story-choice style)
-- [x] Replies include actions + brief feelings/thoughts
-- [x] Prompt: no scene-skip, explicit vocab match, location lock
-- [x] `/img <description>` — AI Horde image generation (free, can be slow)
-- [x] Aria profile portrait on `/start` and `/new` (cached after first gen)
+- [x] **Continue** / **Change** / **Soft / Bold** buttons
+- [x] **Scene state**: heat, rapport, location, outfit (locked + updated from chat)
+- [x] Replies require actions + brief feeling/thought + atmosphere
+- [x] Prompt: no scene-skip, explicit vocab match, location/outfit lock
+- [x] Soft/Bold scene-aware (no generic interview lines)
+- [x] Rate-limit / leak replies not stored in history
+- [x] Local Aria art: `profile.png` = bot avatar; `intro_1–3` on `/start`
+- [x] `/img` via AI Horde (free, can be slow)
 
 ### Not yet
-- [ ] Auto scene images from chat context
+- [ ] Reliable auto scene images (Horde queue still weak)
 - [ ] Multiple characters
 - [ ] Checkpoints UI
+
+---
+
+## Scene state (why Aria feels more consistent)
+
+Each conversation stores:
+
+| Field | Meaning |
+|-------|--------|
+| **heat** | 0–100 how explicit the scene is |
+| **rapport** | 0–100 closeness / comfort |
+| **location** | locked place (bar, apartment, shower…) |
+| **outfit** | locked clothes / nude state |
+
+Updated with light heuristics from the user's lines, injected into the system prompt every reply. `/new` resets chat **and** scene state.
 
 ---
 
@@ -30,12 +47,13 @@ Inspired by LucidDreams-style experiences.
 
 | Command / Button | Description |
 |------------------|-------------|
-| `/start` | Welcome + Aria profile + intro |
+| `/start` | Welcome + intro images + Aria |
 | `/help` | Help |
-| `/new` | Reset memory + intro |
+| `/new` | Reset memory + scene state |
 | `/img <scene>` | Generate image (AI Horde) |
 | **Continue** | Advance scene |
-| **Soft / Bold** | Pick a suggested user reply |
+| **Change** | Alternate reply for same beat |
+| **Soft / Bold** | Suggested user lines (one-shot) |
 
 ---
 
@@ -44,20 +62,24 @@ Inspired by LucidDreams-style experiences.
 ```bash
 git pull
 pip install -r requirements.txt
-# .env needs:
+# .env:
 # TELEGRAM_BOT_TOKEN=
 # OPENROUTER_API_KEY=
 # OPENROUTER_MODEL=openrouter/free
-# AI_HORDE_API_KEY=   # optional but better priority
+# AI_HORDE_API_KEY=   # optional, better priority
+# optional: DEEPSEEK_API_KEY=
 python -m bot.main
 ```
+
+Put Aria art in `data/aria/`:
+- `profile.png` → Telegram bot avatar
+- `intro_1.png` … `intro_3.png` → `/start` gallery
 
 ---
 
 ## Notes
 
-- First Aria profile image may take 1–3 minutes (free Horde queue), then it is cached in `data/`.
-- `/img` is also free and can be slow.
-- Free chat models still vary; prompts reduce but do not eliminate slips.
+- Free chat models still vary; state + prompts reduce slips, not eliminate them.
+- Horde images can be slow or fail on low kudos — local intro art avoids that for `/start`.
 
-**Last Updated**: August 28, 2026
+**Last Updated**: August 31, 2026
