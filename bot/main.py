@@ -31,7 +31,6 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-# Local Aria art (copy your files here — see data/aria/README)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ARIA_DIR = PROJECT_ROOT / "data" / "aria"
 ARIA_PROFILE_CANDIDATES = (
@@ -55,7 +54,7 @@ BOT_WELCOME = (
     "Commands:\n"
     "/start — welcome + meet Aria\n"
     "/help — how to use\n"
-    "/new — reset memory\n"
+    "/new — reset memory + scene state\n"
     "/img — image from current scene (or `/img your details`)\n"
     "Bot avatar: data/aria/profile.png · Intro gallery: intro_1–3"
 )
@@ -75,7 +74,7 @@ ARIA_PROFILE = (
     "Name: Aria\n"
     "Setting: Rooftop bar after midnight; city lights; intimate, low-key mood.\n"
     "Personality: Warm, curious, slightly teasing. Builds atmosphere before escalating.\n"
-    "Tone: Short-to-medium replies with *actions*, dialogue, and atmosphere.\n"
+    "Tone: Short-to-medium replies with *actions*, dialogue, and a brief feeling/thought.\n"
     "Appearance: 2D anime; long black hair; red eyes; thin glasses; low-cut evening top.\n"
     "Do not invent a different job, outfit, or backstory unless the user establishes it."
 )
@@ -120,7 +119,6 @@ def _find_aria_profile() -> Path | None:
 
 
 def _find_aria_intro_images() -> list[Path]:
-    """Only intro_* files — profile.png is the bot avatar, not chat media."""
     found: list[Path] = []
     if not ARIA_DIR.is_dir():
         return found
@@ -140,7 +138,6 @@ def _find_aria_intro_images() -> list[Path]:
 
 
 async def _set_bot_profile_photo(application: Application) -> None:
-    """Set Telegram bot avatar from data/aria/profile.* (not sent in chat)."""
     path = _find_aria_profile()
     if not path:
         logger.info("No data/aria/profile.* found — bot avatar unchanged")
@@ -162,13 +159,11 @@ async def _set_bot_profile_photo(application: Application) -> None:
     except Exception as e:
         logger.warning("set_my_profile_photo failed: %s", e)
 
-    # Fallback: raw Bot API (static profile photo)
     try:
         import httpx
 
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setMyProfilePhoto"
         with path.open("rb") as f:
-            # Telegram expects photo as InputProfilePhoto JSON + file attach
             files = {"photo": (path.name, f, "image/jpeg")}
             data = {"photo": '{"type":"static","photo":"attach://photo"}'}
             async with httpx.AsyncClient(timeout=60.0) as client:
@@ -177,19 +172,14 @@ async def _set_bot_profile_photo(application: Application) -> None:
             logger.info("Bot Telegram profile photo set via raw API from %s", path.name)
         else:
             logger.warning(
-                "Could not set bot avatar (%s). "
-                "Open @BotFather → /setuserpic and upload profile.png manually.",
+                "Could not set bot avatar (%s). Use @BotFather /setuserpic.",
                 resp.text[:300],
             )
     except Exception as e:
-        logger.warning(
-            "Bot avatar not set (%s). Use @BotFather /setuserpic with profile.png",
-            e,
-        )
+        logger.warning("Bot avatar not set (%s). Use @BotFather /setuserpic", e)
 
 
 async def _send_aria_intro_gallery(update: Update) -> None:
-    """Send intro_1–3 in chat only (profile.png is bot avatar, not posted here)."""
     paths = _find_aria_intro_images()
 
     if not paths:
@@ -242,7 +232,7 @@ def _get_or_create_default_character() -> int:
                 "Warm, curious, slightly teasing. Builds atmosphere before escalating. "
                 "Matches the user's pace. Does not invent past shared history."
             ),
-            "tone": "Short-to-medium replies with actions, dialogue, and atmosphere.",
+            "tone": "Short-to-medium replies with actions, dialogue, and a brief feeling.",
             "appearance": (
                 "2D anime; long black hair; red eyes; thin glasses; "
                 "low-cut elegant evening top"
@@ -270,6 +260,20 @@ def _character_profile_text(character_id: int) -> str:
         except Exception:
             pass
     return ARIA_PROFILE
+
+
+def _nudge_scene_from_user(conversation_id: int, user_text: str) -> dict:
+    """Update heat/rapport/location/outfit from the user's latest line."""
+    current = db.get_scene_state(conversation_id)
+    updated = llm.infer_scene_updates(user_text=user_text, current=current)
+    return db.update_scene_state(
+        conversation_id,
+        heat=updated["heat"],
+        rapport=updated["rapport"],
+        location=updated["location"],
+        outfit=updated["outfit"],
+        scene_notes=updated.get("scene_notes"),
+    )
 
 
 async def _generate_and_send_image(
@@ -377,6 +381,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     existing = db.get_recent_messages(conversation_id, limit=1)
     if not existing:
         db.add_message(conversation_id, "assistant", ARIA_SCENE_INTRO)
+        db.reset_scene_state(conversation_id)
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -385,8 +390,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "Reply in character, or use buttons.\n\n"
         "**Buttons**\n"
         "• Continue / Change / Soft / Bold / Image\n\n"
+        "**Scene memory**\n"
+        "Aria tracks heat, rapport, location, and outfit so replies stay consistent.\n"
+        "`/new` resets chat **and** scene state.\n\n"
         "**Aria images**\n"
-        "• `data/aria/profile.png` → **bot Telegram avatar** (not posted in chat)\n"
+        "• `data/aria/profile.png` → bot Telegram avatar\n"
         "• `data/aria/intro_1.png` … `intro_3.png` → shown on /start\n"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
@@ -398,10 +406,10 @@ async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     character_id = _get_or_create_default_character()
     conversation_id = db.get_or_create_conversation(user.id, character_id)
-    db.clear_conversation(conversation_id)
+    db.clear_conversation(conversation_id)  # also resets scene state
 
     db.add_message(conversation_id, "assistant", ARIA_SCENE_INTRO)
-    await update.message.reply_text("Memory cleared. Starting fresh with Aria…")
+    await update.message.reply_text("Memory and scene state cleared. Starting fresh with Aria…")
     await _send_aria_intro_gallery(update)
     await update.message.reply_text(
         ARIA_SCENE_INTRO,
@@ -426,6 +434,9 @@ async def img_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     character_id = _get_or_create_default_character()
     conversation_id = db.get_or_create_conversation(user.id, character_id)
     history = db.get_recent_messages(conversation_id, limit=12)
+    state = db.get_scene_state(conversation_id)
+    if not desc:
+        desc = f"{state.get('location', '')}, {state.get('outfit', '')}"
 
     await _generate_and_send_image(
         update=update,
@@ -444,11 +455,13 @@ async def img_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     character_id = _get_or_create_default_character()
     conversation_id = db.get_or_create_conversation(user.id, character_id)
     history = db.get_recent_messages(conversation_id, limit=12)
+    state = db.get_scene_state(conversation_id)
+    hint = f"{state.get('location', '')}, {state.get('outfit', '')}"
 
     await _generate_and_send_image(
         update=update,
         context=context,
-        scene_hint="",
+        scene_hint=hint,
         history=history,
     )
 
@@ -465,6 +478,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     conversation_id = db.get_or_create_conversation(user.id, character_id)
 
     db.add_message(conversation_id, "user", text)
+    scene_state = _nudge_scene_from_user(conversation_id, text)
     history = db.get_recent_messages(conversation_id, limit=16)
     profile_text = _character_profile_text(character_id)
 
@@ -477,6 +491,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         user_message=text,
         history=history[:-1],
         character_profile=profile_text,
+        scene_state=scene_state,
     )
 
     await _save_assistant_if_ok(conversation_id, reply)
@@ -499,6 +514,7 @@ async def continue_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     conversation_id = db.get_or_create_conversation(user.id, character_id)
     history = db.get_recent_messages(conversation_id, limit=16)
     profile_text = _character_profile_text(character_id)
+    scene_state = db.get_scene_state(conversation_id)
 
     try:
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
@@ -509,6 +525,7 @@ async def continue_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         user_message="",
         history=history,
         character_profile=profile_text,
+        scene_state=scene_state,
         is_continue=True,
     )
 
@@ -532,6 +549,7 @@ async def change_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     conversation_id = db.get_or_create_conversation(user.id, character_id)
     history = db.get_recent_messages(conversation_id, limit=16)
     profile_text = _character_profile_text(character_id)
+    scene_state = db.get_scene_state(conversation_id)
 
     if not history:
         await query.message.reply_text("Nothing to change yet — send a message first.")
@@ -557,6 +575,7 @@ async def change_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         user_message="",
         history=history_for_model,
         character_profile=profile_text,
+        scene_state=scene_state,
         is_regenerate=True,
         previous_reply=previous_reply or None,
     )
@@ -596,6 +615,7 @@ async def suggestion_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     conversation_id = db.get_or_create_conversation(user.id, character_id)
 
     db.add_message(conversation_id, "user", text)
+    scene_state = _nudge_scene_from_user(conversation_id, text)
     history = db.get_recent_messages(conversation_id, limit=16)
     profile_text = _character_profile_text(character_id)
 
@@ -610,6 +630,7 @@ async def suggestion_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         user_message=text,
         history=history[:-1],
         character_profile=profile_text,
+        scene_state=scene_state,
     )
     await _save_assistant_if_ok(conversation_id, reply)
     await _reply_with_suggestions(
