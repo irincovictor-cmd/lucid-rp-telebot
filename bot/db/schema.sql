@@ -37,13 +37,20 @@ CREATE TABLE IF NOT EXISTS characters (
 CREATE INDEX IF NOT EXISTS idx_characters_owner ON characters(owner_id);
 
 -- ---------------------------------------------------------------------------
--- conversations: one thread per (user, character) pair
+-- conversations: one thread per (user, character) pair + live scene state
+-- heat / rapport inspired by stateful RP bots (MistMood-style continuity),
+-- kept consensual and Aria-aligned.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS conversations (
     conversation_id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id         INTEGER NOT NULL,
     character_id    INTEGER NOT NULL,
     title           TEXT,
+    heat            INTEGER NOT NULL DEFAULT 0,        -- 0–100 explicit intensity
+    rapport         INTEGER NOT NULL DEFAULT 15,       -- 0–100 closeness / comfort
+    location        TEXT NOT NULL DEFAULT 'rooftop bar after midnight',
+    outfit          TEXT NOT NULL DEFAULT 'low-cut elegant evening top, thin glasses',
+    scene_notes     TEXT NOT NULL DEFAULT '',          -- short freeform facts
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
