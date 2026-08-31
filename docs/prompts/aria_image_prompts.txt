@@ -1,0 +1,168 @@
+================================================================================
+ARIA — IMAGE PROMPT LIBRARY
+Project: Lucid RP Telebot (HoneyChat)
+Style: 2D anime · Nova Anime XL / AI Horde friendly
+Last updated: 2026-09-01
+================================================================================
+
+HOW TO USE
+----------
+1. Copy BASE LOCK + one SCENE block + NEGATIVE into your generator.
+2. Keep BASE LOCK identical every time so Aria stays consistent.
+3. Change only the SCENE line for pose / outfit / location.
+
+
+================================================================================
+BASE LOCK (always paste first)
+================================================================================
+
+masterpiece, best quality, ultra-detailed, absurdres, 2d anime style, cel shading, clean line art,
+Mature woman Aria, long black hair, red eyes, thin glasses, fair skin,
+large full breasts, natural deep cleavage, slim waist, wide hips, thick thighs,
+high quality anime, not photorealistic, not 3d
+
+
+================================================================================
+NEGATIVE PROMPT (always use)
+================================================================================
+
+photorealistic, realistic photo, 3d, cgi, deformed, bad anatomy, bad hands, extra limbs,
+blurry, lowres, text, watermark, child, underage, loli, toddler, flat chest
+
+For intro-safe / SFW images also add:
+nude, naked, explicit, pussy, nipples, underwear focus
+
+
+================================================================================
+FAVORITE — INTRO / CHARACTER CARD (rooftop drink, clothed)
+================================================================================
+Use for: /start gallery, bot profile vibes, clickbait still tasteful
+
+masterpiece, best quality, ultra-detailed, absurdres, 2d anime style, cel shading, clean line art,
+Mature woman Aria, long black hair, red eyes, thin glasses, fair skin,
+large full breasts, natural deep cleavage, slim waist, wide hips, thick thighs,
+soft playful smile, half-lidded warm eyes, looking at viewer,
+low-cut tight evening dress hugging her curves, elegant but seductive, generous cleavage visible but clothed,
+sitting on rooftop bar stool at night, legs crossed showing thick thighs,
+holding a cocktail glass, city night lights bokeh background, soft neon reflections on glasses,
+empty bar stool beside her suggesting company, intimate quiet atmosphere,
+upper body to thighs in frame, high quality anime, not photorealistic, not 3d
+
+Negative:
+photorealistic, realistic photo, 3d, cgi, deformed, bad anatomy, extra limbs, blurry, lowres,
+text, watermark, child, underage, loli, toddler, flat chest, nude, naked, explicit, pussy, nipples
+
+
+================================================================================
+NORMAL / INTRO VARIANTS (user not visible — Aria only)
+================================================================================
+
+--- Classic bar chat ---
+[BASE LOCK],
+soft smile, looking at viewer, sitting on rooftop bar stool, one elbow on the counter,
+holding a cocktail glass, chatting casually, city night lights bokeh, empty stool beside her,
+upper body to thighs, warm intimate atmosphere
+
+--- Listening / curious ---
+[BASE LOCK],
+tilting her head slightly, curious expression, looking at viewer,
+sitting sideways on bar stool, legs crossed, glass resting on the counter,
+soft night breeze in her hair, rooftop bar background, conversational mood
+
+--- Soft laugh ---
+[BASE LOCK],
+soft laugh, eyes slightly closed, genuine smile, looking toward viewer,
+hand lightly covering her mouth, cocktail glass in other hand,
+sitting at rooftop bar, city lights behind her, friendly warm atmosphere
+
+--- Leaning in ---
+[BASE LOCK],
+leaning slightly forward on the bar, engaged expression, looking at viewer,
+chin resting near her hand, glass nearby, low-cut top visible but tasteful,
+close conversational framing, rooftop night bokeh, intimate but wholesome
+
+--- Quiet sip ---
+[BASE LOCK],
+calm gentle smile, looking at viewer over the rim of her glass,
+sitting relaxed on bar stool, city skyline behind her,
+soft neon reflection on her glasses, peaceful late-night mood
+
+--- Portrait (character card) ---
+[BASE LOCK],
+portrait composition, looking at viewer, soft smile, rooftop bar blurred background,
+cocktail in hand, elegant low-cut evening top, high quality anime
+
+
+================================================================================
+SPICY / NSFW SCENES
+================================================================================
+
+--- Solo masturbation (bedroom) ---
+[BASE LOCK],
+lying on bed, blouse open, breasts out, pencil skirt hiked up, torn black stockings at crotch,
+no panties, fingers rubbing her wet pussy, legs spread, flushed face, half-lidded eyes,
+soft moan expression, looking at viewer, warm bedroom light, full body in frame
+
+--- Cowgirl ---
+[BASE LOCK],
+nude, riding on top in cowgirl position, straddling partner (partner mostly out of frame),
+large breasts bouncing, hands on his chest, head tilted back in pleasure, thick thighs gripping,
+bedroom, explicit sex, full body view
+
+--- Doggy style ---
+[BASE LOCK],
+on all fours on bed, doggy style, arched back, looking over her shoulder at viewer,
+breasts hanging, thick thighs, partner behind mostly cropped, explicit penetration, full body in frame
+
+--- Missionary ---
+[BASE LOCK],
+lying on back, legs spread and raised, missionary position, arms around partner,
+flushed face, open mouth, large breasts, glasses on, explicit sex, bed sheets, full body view
+
+--- Reverse cowgirl ---
+[BASE LOCK],
+nude, reverse cowgirl, back facing viewer, looking over shoulder, thick ass and thighs,
+long black hair down her back, riding, explicit, bedroom, full body in frame
+
+--- Blowjob ---
+[BASE LOCK],
+on her knees, glasses on, large breasts visible, holding shaft, mouth open around tip,
+looking up at viewer, saliva, explicit oral, soft light, upper body focus
+
+--- Standing / wall ---
+[BASE LOCK],
+standing sex against wall, one leg lifted, dress pushed up, breasts out, back arched,
+pleasure expression, thick thighs, explicit, dim room, full body in frame
+
+--- Mating press ---
+[BASE LOCK],
+on back, legs folded toward chest, mating press, deep penetration, large breasts pressed up,
+flustered face, glasses slightly tilted, explicit, bed, full body view
+
+--- Shower doggy ---
+[BASE LOCK],
+in steamy shower, hands on tiled wall, doggy style, wet long black hair, water on skin,
+breasts hanging, thick thighs, explicit, foggy glass, full body in frame
+
+--- Office chair spread ---
+[BASE LOCK],
+sitting on office chair, white blouse open breasts out, black pencil skirt hiked up,
+torn black stockings, legs spread, both hands spreading her pussy, seductive expression,
+glasses on, explicit solo, office night light, full body to feet in frame
+
+--- Spooning ---
+[BASE LOCK],
+lying on side spooning, one leg lifted, explicit from behind, breasts held by her own hand,
+soft moan face, glasses on, bed, intimate lighting, full body in frame
+
+Optional full-body boost (if crops too tight):
+full body view, entire figure in frame, head to toes, wide shot
+
+
+================================================================================
+NOTES
+================================================================================
+- Prefer Nova Anime XL on AI Horde for style consistency.
+- Large resolutions (e.g. 1024x1024) may need more Horde kudos.
+- Local files: data/aria/profile.png (bot avatar), data/aria/intro_1–3.png (gallery).
+- Keep this file updated when a new favorite prompt is locked in.
