@@ -1,4 +1,3 @@
-import json
 import logging
 import os
 from io import BytesIO
@@ -43,7 +42,6 @@ ARIA_PROFILE_CANDIDATES = (
 )
 ARIA_INTRO_GLOBS = ("intro_*.png", "intro_*.jpg", "intro_*.jpeg", "intro_*.webp")
 
-# Canonical character card — single source for the LLM (not stale SQLite JSON).
 ARIA_CARD = (
     "Name: Aria\n"
     "Age: late 20s, mature woman\n"
@@ -113,7 +111,9 @@ async def _send_formatted(target_message, text: str, reply_markup=None) -> None:
         await target_message.reply_text(text, reply_markup=reply_markup)
 
 
-def _rp_keyboard(soft: str | None = None, bold: str | None = None, key: str | None = None) -> InlineKeyboardMarkup:
+def _rp_keyboard(
+    soft: str | None = None, bold: str | None = None, key: str | None = None
+) -> InlineKeyboardMarkup:
     rows = [
         [
             InlineKeyboardButton("Continue ▶", callback_data="rp_continue"),
@@ -171,7 +171,6 @@ async def _set_bot_profile_photo(application: Application) -> None:
                 photo=InputProfilePhotoStatic(photo=f)
             )
         logger.info("Bot Telegram profile photo set from %s", path.name)
-        return
     except Exception as e:
         logger.warning("set_my_profile_photo failed: %s", e)
 
@@ -206,22 +205,18 @@ async def _send_aria_intro_gallery(update: Update) -> None:
                 pass
 
 
-def _get_or_create_default_character() -> int:
-    """Ensure built-in Aria exists and profile_json matches the canonical card."""
-    conn = db.get_conn()
-    row = conn.execute(
-        "SELECT character_id FROM characters WHERE owner_id IS NULL LIMIT 1"
-    ).fetchone()
-    if row:
-        cid = row["character_id"]
-        db.update_character_profile(
+async def _get_or_create_default_character() -> int:
+    """Ensure built-in Aria exists; refresh card without blocking the event loop."""
+    cid = await db.async_find_builtin_character_id()
+    if cid is not None:
+        await db.async_update_character_profile(
             cid,
             name="Aria",
             short_desc="Warm, teasing companion at a late-night rooftop bar.",
             profile_json=ARIA_PROFILE_JSON,
         )
         return cid
-    return db.create_character(
+    return await db.async_create_character(
         owner_id=None,
         name="Aria",
         short_desc="Warm, teasing companion at a late-night rooftop bar.",
@@ -231,14 +226,13 @@ def _get_or_create_default_character() -> int:
 
 
 def _character_profile_text(_character_id: int) -> str:
-    """Always use code card for Aria so old SQLite JSON cannot clash."""
     return ARIA_CARD
 
 
-def _nudge_scene_from_user(conversation_id: int, user_text: str) -> dict:
-    current = db.get_scene_state(conversation_id)
+async def _nudge_scene_from_user(conversation_id: int, user_text: str) -> dict:
+    current = await db.async_get_scene_state(conversation_id)
     updated = llm.infer_scene_updates(user_text=user_text, current=current)
-    return db.update_scene_state(
+    return await db.async_update_scene_state(
         conversation_id,
         heat=updated["heat"],
         rapport=updated["rapport"],
@@ -322,12 +316,12 @@ async def _reply_with_suggestions(
 
 async def _save_assistant_if_ok(conversation_id: int, reply: str) -> None:
     if not llm.is_system_failure_reply(reply) and not llm._looks_like_leak(reply):
-        db.add_message(conversation_id, "assistant", reply)
+        await db.async_add_message(conversation_id, "assistant", reply)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    db.upsert_user(user.id, user.username, user.first_name)
+    await db.async_upsert_user(user.id, user.username, user.first_name)
 
     await update.message.reply_text(BOT_WELCOME, parse_mode="Markdown")
     await _send_aria_intro_gallery(update)
@@ -345,12 +339,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "*smirks* Looking for trouble. Found any?",
     )
 
-    character_id = _get_or_create_default_character()
-    conversation_id = db.get_or_create_conversation(user.id, character_id)
-    existing = db.get_recent_messages(conversation_id, limit=1)
+    character_id = await _get_or_create_default_character()
+    conversation_id = await db.async_get_or_create_conversation(user.id, character_id)
+    existing = await db.async_get_recent_messages(conversation_id, limit=1)
     if not existing:
-        db.add_message(conversation_id, "assistant", ARIA_SCENE_INTRO)
-        db.reset_scene_state(conversation_id)
+        await db.async_add_message(conversation_id, "assistant", ARIA_SCENE_INTRO)
+        await db.async_reset_scene_state(conversation_id)
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -366,13 +360,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    db.upsert_user(user.id, user.username, user.first_name)
+    await db.async_upsert_user(user.id, user.username, user.first_name)
 
-    character_id = _get_or_create_default_character()
-    conversation_id = db.get_or_create_conversation(user.id, character_id)
-    db.clear_conversation(conversation_id)
+    character_id = await _get_or_create_default_character()
+    conversation_id = await db.async_get_or_create_conversation(user.id, character_id)
+    await db.async_clear_conversation(conversation_id)
 
-    db.add_message(conversation_id, "assistant", ARIA_SCENE_INTRO)
+    await db.async_add_message(conversation_id, "assistant", ARIA_SCENE_INTRO)
     await update.message.reply_text("Memory and scene state cleared. Starting fresh with Aria…")
     await _send_aria_intro_gallery(update)
     await _send_formatted(
@@ -393,11 +387,11 @@ async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def img_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     desc = " ".join(context.args).strip() if context.args else ""
     user = update.effective_user
-    db.upsert_user(user.id, user.username, user.first_name)
-    character_id = _get_or_create_default_character()
-    conversation_id = db.get_or_create_conversation(user.id, character_id)
-    history = db.get_recent_messages(conversation_id, limit=12)
-    state = db.get_scene_state(conversation_id)
+    await db.async_upsert_user(user.id, user.username, user.first_name)
+    character_id = await _get_or_create_default_character()
+    conversation_id = await db.async_get_or_create_conversation(user.id, character_id)
+    history = await db.async_get_recent_messages(conversation_id, limit=12)
+    state = await db.async_get_scene_state(conversation_id)
     if not desc:
         desc = f"{state.get('location', '')}, {state.get('outfit', '')}"
     await _generate_and_send_image(
@@ -409,11 +403,11 @@ async def img_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     query = update.callback_query
     await _safe_answer(query, "Generating image from scene…")
     user = update.effective_user
-    db.upsert_user(user.id, user.username, user.first_name)
-    character_id = _get_or_create_default_character()
-    conversation_id = db.get_or_create_conversation(user.id, character_id)
-    history = db.get_recent_messages(conversation_id, limit=12)
-    state = db.get_scene_state(conversation_id)
+    await db.async_upsert_user(user.id, user.username, user.first_name)
+    character_id = await _get_or_create_default_character()
+    conversation_id = await db.async_get_or_create_conversation(user.id, character_id)
+    history = await db.async_get_recent_messages(conversation_id, limit=12)
+    state = await db.async_get_scene_state(conversation_id)
     hint = f"{state.get('location', '')}, {state.get('outfit', '')}"
     await _generate_and_send_image(
         update=update, context=context, scene_hint=hint, history=history
@@ -426,17 +420,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not text.strip():
         return
 
-    db.upsert_user(user.id, user.username, user.first_name)
-    character_id = _get_or_create_default_character()
-    conversation_id = db.get_or_create_conversation(user.id, character_id)
+    await db.async_upsert_user(user.id, user.username, user.first_name)
+    character_id = await _get_or_create_default_character()
+    conversation_id = await db.async_get_or_create_conversation(user.id, character_id)
 
-    db.add_message(conversation_id, "user", text)
-    scene_state = _nudge_scene_from_user(conversation_id, text)
-    history = db.get_recent_messages(conversation_id, limit=16)
+    await db.async_add_message(conversation_id, "user", text)
+    scene_state = await _nudge_scene_from_user(conversation_id, text)
+    history = await db.async_get_recent_messages(conversation_id, limit=16)
     profile_text = _character_profile_text(character_id)
 
     try:
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id, action="typing"
+        )
     except (TimedOut, NetworkError):
         pass
 
@@ -459,14 +455,16 @@ async def continue_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     query = update.callback_query
     await _safe_answer(query)
     user = update.effective_user
-    db.upsert_user(user.id, user.username, user.first_name)
-    character_id = _get_or_create_default_character()
-    conversation_id = db.get_or_create_conversation(user.id, character_id)
-    history = db.get_recent_messages(conversation_id, limit=16)
+    await db.async_upsert_user(user.id, user.username, user.first_name)
+    character_id = await _get_or_create_default_character()
+    conversation_id = await db.async_get_or_create_conversation(user.id, character_id)
+    history = await db.async_get_recent_messages(conversation_id, limit=16)
     profile_text = _character_profile_text(character_id)
-    scene_state = db.get_scene_state(conversation_id)
+    scene_state = await db.async_get_scene_state(conversation_id)
     try:
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id, action="typing"
+        )
     except (TimedOut, NetworkError):
         pass
     reply = await llm.generate_reply(
@@ -489,12 +487,12 @@ async def change_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     query = update.callback_query
     await _safe_answer(query, "Rewriting reply…")
     user = update.effective_user
-    db.upsert_user(user.id, user.username, user.first_name)
-    character_id = _get_or_create_default_character()
-    conversation_id = db.get_or_create_conversation(user.id, character_id)
-    history = db.get_recent_messages(conversation_id, limit=16)
+    await db.async_upsert_user(user.id, user.username, user.first_name)
+    character_id = await _get_or_create_default_character()
+    conversation_id = await db.async_get_or_create_conversation(user.id, character_id)
+    history = await db.async_get_recent_messages(conversation_id, limit=16)
     profile_text = _character_profile_text(character_id)
-    scene_state = db.get_scene_state(conversation_id)
+    scene_state = await db.async_get_scene_state(conversation_id)
     if not history:
         await query.message.reply_text("Nothing to change yet — send a message first.")
         return
@@ -508,7 +506,9 @@ async def change_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.message.reply_text("Nothing to change yet — send a message first.")
         return
     try:
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id, action="typing"
+        )
     except (TimedOut, NetworkError):
         pass
     reply = await llm.generate_reply(
@@ -544,15 +544,17 @@ async def suggestion_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     text = pair[0] if idx == 0 else pair[1]
     user = update.effective_user
-    db.upsert_user(user.id, user.username, user.first_name)
-    character_id = _get_or_create_default_character()
-    conversation_id = db.get_or_create_conversation(user.id, character_id)
-    db.add_message(conversation_id, "user", text)
-    scene_state = _nudge_scene_from_user(conversation_id, text)
-    history = db.get_recent_messages(conversation_id, limit=16)
+    await db.async_upsert_user(user.id, user.username, user.first_name)
+    character_id = await _get_or_create_default_character()
+    conversation_id = await db.async_get_or_create_conversation(user.id, character_id)
+    await db.async_add_message(conversation_id, "user", text)
+    scene_state = await _nudge_scene_from_user(conversation_id, text)
+    history = await db.async_get_recent_messages(conversation_id, limit=16)
     profile_text = _character_profile_text(character_id)
     try:
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id, action="typing"
+        )
     except (TimedOut, NetworkError):
         pass
     await query.message.reply_text(f"You: {text}")
@@ -572,7 +574,7 @@ async def suggestion_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def _post_init(application: Application) -> None:
-    _get_or_create_default_character()  # refresh Aria card on every boot
+    await _get_or_create_default_character()
     await _set_bot_profile_photo(application)
 
 
@@ -580,7 +582,7 @@ def main() -> None:
     if not TELEGRAM_BOT_TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN is not set in .env file")
 
-    db.init_db()
+    db.init_db()  # sync once at startup — fine
     ARIA_DIR.mkdir(parents=True, exist_ok=True)
 
     request = HTTPXRequest(
