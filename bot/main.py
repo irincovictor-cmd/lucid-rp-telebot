@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from io import BytesIO
@@ -103,12 +104,29 @@ async def _safe_answer(query, text: str | None = None) -> None:
 
 
 async def _send_formatted(target_message, text: str, reply_markup=None) -> None:
+    """Send RP text; tolerate Markdown parse errors and short network blips."""
+
+    async def _send(parse_mode: str | None) -> None:
+        kwargs: dict = {"reply_markup": reply_markup}
+        if parse_mode:
+            kwargs["parse_mode"] = parse_mode
+        await target_message.reply_text(text, **kwargs)
+
     try:
-        await target_message.reply_text(
-            text, reply_markup=reply_markup, parse_mode="Markdown"
-        )
+        await _send("Markdown")
+        return
     except BadRequest:
-        await target_message.reply_text(text, reply_markup=reply_markup)
+        pass  # fall through to plain
+    except (TimedOut, NetworkError) as e:
+        logger.warning("Telegram send (markdown) network blip: %s", e)
+        await asyncio.sleep(0.8)
+
+    try:
+        await _send(None)
+    except (TimedOut, NetworkError) as e:
+        logger.warning("Telegram send failed after retry: %s", e)
+    except BadRequest as e:
+        logger.warning("Telegram send BadRequest: %s", e)
 
 
 def _rp_keyboard(
@@ -178,35 +196,42 @@ async def _set_bot_profile_photo(application: Application) -> None:
 async def _send_aria_intro_gallery(update: Update) -> None:
     paths = _find_aria_intro_images()
     if not paths:
-        await update.message.reply_text(
-            "Add intro_1.png–intro_3.png under data/aria/ for the gallery.\n"
-            "profile.png is the bot avatar only."
-        )
-        return
-    if len(paths) == 1:
-        with paths[0].open("rb") as f:
-            await update.message.reply_photo(
-                photo=InputFile(f, filename=paths[0].name), caption="Aria"
+        try:
+            await update.message.reply_text(
+                "Add intro_1.png–intro_3.png under data/aria/ for the gallery.\n"
+                "profile.png is the bot avatar only."
             )
+        except (TimedOut, NetworkError) as e:
+            logger.warning("intro gallery text failed: %s", e)
         return
-    media: list[InputMediaPhoto] = []
-    handles = []
     try:
-        for i, p in enumerate(paths):
-            fh = p.open("rb")
-            handles.append(fh)
-            media.append(InputMediaPhoto(media=fh, caption="Aria" if i == 0 else None))
-        await update.message.reply_media_group(media=media)
-    finally:
-        for fh in handles:
-            try:
-                fh.close()
-            except Exception:
-                pass
+        if len(paths) == 1:
+            with paths[0].open("rb") as f:
+                await update.message.reply_photo(
+                    photo=InputFile(f, filename=paths[0].name), caption="Aria"
+                )
+            return
+        media: list[InputMediaPhoto] = []
+        handles = []
+        try:
+            for i, p in enumerate(paths):
+                fh = p.open("rb")
+                handles.append(fh)
+                media.append(
+                    InputMediaPhoto(media=fh, caption="Aria" if i == 0 else None)
+                )
+            await update.message.reply_media_group(media=media)
+        finally:
+            for fh in handles:
+                try:
+                    fh.close()
+                except Exception:
+                    pass
+    except (TimedOut, NetworkError) as e:
+        logger.warning("intro gallery send failed: %s", e)
 
 
 async def _get_or_create_default_character() -> int:
-    """Ensure built-in Aria exists; refresh card without blocking the event loop."""
     cid = await db.async_find_builtin_character_id()
     if cid is not None:
         await db.async_update_character_profile(
@@ -250,10 +275,14 @@ async def _generate_and_send_image(
     history: list | None = None,
 ) -> None:
     chat_id = update.effective_chat.id
-    status = await context.bot.send_message(
-        chat_id,
-        "🖼️ Generating 2D anime image…\nFree AI Horde queue — please wait.",
-    )
+    try:
+        status = await context.bot.send_message(
+            chat_id,
+            "🖼️ Generating 2D anime image…\nFree AI Horde queue — please wait.",
+        )
+    except (TimedOut, NetworkError) as e:
+        logger.warning("image status message failed: %s", e)
+        return
 
     async def on_progress(msg: str) -> None:
         try:
@@ -282,11 +311,14 @@ async def _generate_and_send_image(
         await status.delete()
     except Exception:
         pass
-    await context.bot.send_photo(
-        chat_id,
-        photo=InputFile(BytesIO(data), filename="scene.webp"),
-        caption=(scene_hint[:200] if scene_hint else "From current scene"),
-    )
+    try:
+        await context.bot.send_photo(
+            chat_id,
+            photo=InputFile(BytesIO(data), filename="scene.webp"),
+            caption=(scene_hint[:200] if scene_hint else "From current scene"),
+        )
+    except (TimedOut, NetworkError) as e:
+        logger.warning("image send failed: %s", e)
 
 
 async def _reply_with_suggestions(
@@ -297,15 +329,27 @@ async def _reply_with_suggestions(
     history: list,
 ) -> None:
     if llm.is_system_failure_reply(reply):
-        await target_message.reply_text(reply)
+        try:
+            await target_message.reply_text(reply)
+        except (TimedOut, NetworkError) as e:
+            logger.warning("failure reply send failed: %s", e)
         return
 
-    soft, bold = await llm.generate_suggestions(history=history, last_assistant=reply)
-    key = f"{conversation_id}_{abs(hash(reply)) % 10_000_000}"
-    _suggestion_store[key] = (soft, bold)
-    if len(_suggestion_store) > 200:
-        for old in list(_suggestion_store.keys())[:50]:
-            _suggestion_store.pop(old, None)
+    try:
+        soft, bold = await llm.generate_suggestions(
+            history=history, last_assistant=reply
+        )
+    except Exception:
+        logger.exception("suggestion generation failed; sending reply without Soft/Bold")
+        soft, bold = None, None
+
+    key = None
+    if soft and bold:
+        key = f"{conversation_id}_{abs(hash(reply)) % 10_000_000}"
+        _suggestion_store[key] = (soft, bold)
+        if len(_suggestion_store) > 200:
+            for old in list(_suggestion_store.keys())[:50]:
+                _suggestion_store.pop(old, None)
 
     await _send_formatted(
         target_message,
@@ -323,7 +367,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     await db.async_upsert_user(user.id, user.username, user.first_name)
 
-    await update.message.reply_text(BOT_WELCOME, parse_mode="Markdown")
+    try:
+        await update.message.reply_text(BOT_WELCOME, parse_mode="Markdown")
+    except (TimedOut, NetworkError, BadRequest):
+        try:
+            await update.message.reply_text(BOT_WELCOME)
+        except (TimedOut, NetworkError):
+            pass
+
     await _send_aria_intro_gallery(update)
     await _send_formatted(
         update.message,
@@ -355,7 +406,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• _inner thought_ — private feeling\n\n"
         "`/new` resets chat and scene state.\n"
     )
-    await update.message.reply_text(help_text, parse_mode="Markdown")
+    try:
+        await update.message.reply_text(help_text, parse_mode="Markdown")
+    except (BadRequest, TimedOut, NetworkError):
+        try:
+            await update.message.reply_text(help_text)
+        except (TimedOut, NetworkError):
+            pass
 
 
 async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -367,7 +424,12 @@ async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await db.async_clear_conversation(conversation_id)
 
     await db.async_add_message(conversation_id, "assistant", ARIA_SCENE_INTRO)
-    await update.message.reply_text("Memory and scene state cleared. Starting fresh with Aria…")
+    try:
+        await update.message.reply_text(
+            "Memory and scene state cleared. Starting fresh with Aria…"
+        )
+    except (TimedOut, NetworkError):
+        pass
     await _send_aria_intro_gallery(update)
     await _send_formatted(
         update.message,
@@ -494,7 +556,10 @@ async def change_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     profile_text = _character_profile_text(character_id)
     scene_state = await db.async_get_scene_state(conversation_id)
     if not history:
-        await query.message.reply_text("Nothing to change yet — send a message first.")
+        try:
+            await query.message.reply_text("Nothing to change yet — send a message first.")
+        except (TimedOut, NetworkError):
+            pass
         return
     previous_reply = ""
     if history[-1].get("role") == "assistant":
@@ -503,7 +568,10 @@ async def change_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     else:
         history_for_model = history
     if not history_for_model:
-        await query.message.reply_text("Nothing to change yet — send a message first.")
+        try:
+            await query.message.reply_text("Nothing to change yet — send a message first.")
+        except (TimedOut, NetworkError):
+            pass
         return
     try:
         await context.bot.send_chat_action(
@@ -536,11 +604,17 @@ async def suggestion_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         _, key, idx_s = data.split(":", 2)
         idx = int(idx_s)
     except ValueError:
-        await query.message.reply_text("That suggestion expired. Send a message instead.")
+        try:
+            await query.message.reply_text("That suggestion expired. Send a message instead.")
+        except (TimedOut, NetworkError):
+            pass
         return
     pair = _suggestion_store.pop(key, None)
     if not pair:
-        await query.message.reply_text("That suggestion expired. Send a message instead.")
+        try:
+            await query.message.reply_text("That suggestion expired. Send a message instead.")
+        except (TimedOut, NetworkError):
+            pass
         return
     text = pair[0] if idx == 0 else pair[1]
     user = update.effective_user
@@ -557,7 +631,10 @@ async def suggestion_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
     except (TimedOut, NetworkError):
         pass
-    await query.message.reply_text(f"You: {text}")
+    try:
+        await query.message.reply_text(f"You: {text}")
+    except (TimedOut, NetworkError):
+        pass
     reply = await llm.generate_reply(
         user_message=text,
         history=history[:-1],
@@ -582,7 +659,7 @@ def main() -> None:
     if not TELEGRAM_BOT_TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN is not set in .env file")
 
-    db.init_db()  # sync once at startup — fine
+    db.init_db()
     ARIA_DIR.mkdir(parents=True, exist_ok=True)
 
     request = HTTPXRequest(
