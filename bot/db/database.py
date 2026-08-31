@@ -1,11 +1,5 @@
 """
 Database access layer for Lucid RP Telebot.
-
-Thin wrapper around sqlite3 with:
-- a single shared connection (WAL mode, safe for asyncio single-process use)
-- schema initialization + light migrations
-- CRUD helpers for users, characters, conversations, messages,
-  checkpoints, credit transactions, and scene state (heat/rapport/location)
 """
 
 from __future__ import annotations
@@ -43,7 +37,6 @@ def get_conn() -> sqlite3.Connection:
 
 
 def _migrate_scene_columns(conn: sqlite3.Connection) -> None:
-    """Add scene-state columns on older DBs created before this feature."""
     cols = {
         r[1] for r in conn.execute("PRAGMA table_info(conversations)").fetchall()
     }
@@ -73,7 +66,6 @@ def _migrate_scene_columns(conn: sqlite3.Connection) -> None:
 
 
 def init_db() -> None:
-    """Create tables if they don't exist. Safe to call on every startup."""
     conn = get_conn()
     with open(SCHEMA_PATH, "r", encoding="utf-8") as f:
         conn.executescript(f.read())
@@ -91,10 +83,6 @@ def tx() -> Iterator[sqlite3.Connection]:
         conn.rollback()
         raise
 
-
-# ---------------------------------------------------------------------------
-# Users
-# ---------------------------------------------------------------------------
 
 def upsert_user(user_id: int, username: Optional[str], first_name: Optional[str]) -> None:
     with tx() as conn:
@@ -133,10 +121,6 @@ def set_banned(user_id: int, banned: bool) -> None:
         )
 
 
-# ---------------------------------------------------------------------------
-# Characters
-# ---------------------------------------------------------------------------
-
 def create_character(
     name: str,
     profile_json: str | dict,
@@ -158,6 +142,33 @@ def create_character(
         return cur.lastrowid
 
 
+def update_character_profile(
+    character_id: int,
+    *,
+    name: Optional[str] = None,
+    short_desc: Optional[str] = None,
+    profile_json: Optional[str | dict] = None,
+) -> None:
+    """Refresh a character card (used so built-in Aria is not stuck on an old JSON)."""
+    if isinstance(profile_json, dict):
+        profile_json = json.dumps(profile_json)
+    with tx() as conn:
+        if name is not None:
+            conn.execute(
+                "UPDATE characters SET name = ? WHERE character_id = ?", (name, character_id)
+            )
+        if short_desc is not None:
+            conn.execute(
+                "UPDATE characters SET short_desc = ? WHERE character_id = ?",
+                (short_desc, character_id),
+            )
+        if profile_json is not None:
+            conn.execute(
+                "UPDATE characters SET profile_json = ? WHERE character_id = ?",
+                (profile_json, character_id),
+            )
+
+
 def get_character(character_id: int) -> Optional[dict[str, Any]]:
     conn = get_conn()
     row = conn.execute("SELECT * FROM characters WHERE character_id = ?", (character_id,)).fetchone()
@@ -176,10 +187,6 @@ def list_characters_for_user(user_id: int) -> list[dict[str, Any]]:
     ).fetchall()
     return [dict(r) for r in rows]
 
-
-# ---------------------------------------------------------------------------
-# Conversations & Messages
-# ---------------------------------------------------------------------------
 
 def get_or_create_conversation(user_id: int, character_id: int) -> int:
     conn = get_conn()
@@ -266,7 +273,6 @@ def update_scene_state(
 
 
 def reset_scene_state(conversation_id: int) -> dict[str, Any]:
-    """Reset to Aria intro defaults (used by /new)."""
     return update_scene_state(
         conversation_id,
         heat=0,
@@ -315,10 +321,6 @@ def clear_conversation(conversation_id: int) -> None:
     reset_scene_state(conversation_id)
 
 
-# ---------------------------------------------------------------------------
-# Checkpoints
-# ---------------------------------------------------------------------------
-
 def create_checkpoint(conversation_id: int, label: str) -> Optional[int]:
     conn = get_conn()
     last = conn.execute(
@@ -361,10 +363,6 @@ def load_checkpoint_messages(checkpoint_id: int) -> list[dict[str, Any]]:
     ).fetchall()
     return [dict(r) for r in rows]
 
-
-# ---------------------------------------------------------------------------
-# Credits
-# ---------------------------------------------------------------------------
 
 def get_credits(user_id: int) -> int:
     user = get_user(user_id)
