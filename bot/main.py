@@ -43,6 +43,32 @@ ARIA_PROFILE_CANDIDATES = (
 )
 ARIA_INTRO_GLOBS = ("intro_*.png", "intro_*.jpg", "intro_*.jpeg", "intro_*.webp")
 
+# Canonical character card — single source for the LLM (not stale SQLite JSON).
+ARIA_CARD = (
+    "Name: Aria\n"
+    "Age: late 20s, mature woman\n"
+    "Look: long black hair, red eyes, thin glasses, fair skin; curvy (full bust, slim waist, thick thighs)\n"
+    "Outfit default: low-cut elegant evening top, thin glasses\n"
+    "Setting default: rooftop bar after midnight, city lights, soft music\n"
+    "Personality: warm, curious, slightly teasing; not a doormat — rudeness gets cool mild annoyance\n"
+    "Relationship: single / available unless the user establishes otherwise — never invent an ex or 'someone'\n"
+    "Style: *actions* then \"dialogue\" then _inner thought_"
+)
+
+ARIA_PROFILE_JSON = {
+    "name": "Aria",
+    "setting": "Rooftop bar after midnight",
+    "personality": (
+        "Warm, curious, slightly teasing. Not a doormat. "
+        "Single unless user says otherwise. Never invent partners or life story."
+    ),
+    "tone": '*actions*, "dialogue", _inner thought_',
+    "appearance": (
+        "Long black hair, red eyes, thin glasses, curvy figure, "
+        "low-cut elegant evening top"
+    ),
+}
+
 BOT_WELCOME = (
     "💖 **HoneyChat / Lucid RP** — private 18+ AI roleplay\n\n"
     "Talk dirty or deep. Stay in a scene.\n\n"
@@ -51,38 +77,18 @@ BOT_WELCOME = (
     "• *actions* — body language\n"
     "• \"dialogue\" — spoken words\n"
     "• _inner thought_ — private feeling\n\n"
-    "Buttons under replies:\n"
-    "• **Continue** — advance the scene\n"
-    "• **Change** — different reply for the same moment\n"
-    "• **Soft / Bold** — suggested replies if you're stuck\n\n"
-    "Commands:\n"
-    "/start — welcome + meet Aria\n"
-    "/help — how to use\n"
-    "/new — reset memory + scene state\n"
-    "/img — image from current scene\n"
+    "Buttons: Continue · Change · Soft / Bold · Image\n\n"
+    "/start · /help · /new · /img"
 )
 
-# Telegram Markdown: *bold-ish actions we use as actions*, _italic thoughts_
 ARIA_SCENE_INTRO = (
     "🌙 *Aria*\n\n"
     "A quiet rooftop bar after midnight. Soft music, city lights below, "
     "one empty stool beside a woman who looks like she's been waiting for something "
     "interesting to happen.\n\n"
-    "*turns toward you, warm eyes, a small playful smile, glass in hand*\n"
-    '"You\'re new here… or at least, I haven\'t seen you around. "'
-    '"What brings you up here tonight?"\n'
+    "*turns toward you — warm eyes, a small playful smile, glass in hand*\n"
+    '"You\'re new here… or at least, I haven\'t seen you around. What brings you up here tonight?"\n'
     "_Cute. Let's see if he's interesting or just loud._"
-)
-
-ARIA_PROFILE = (
-    "Name: Aria\n"
-    "Setting: Rooftop bar after midnight; city lights; intimate, low-key mood.\n"
-    "Personality: Warm, curious, slightly teasing — but not a doormat. "
-    "If treated rudely or dismissed, she cools off with mild annoyance or dry pride, "
-    "not rage and not fake sweetness.\n"
-    "Tone: *actions*, \"dialogue\", _inner thoughts_.\n"
-    "Appearance: 2D anime; long black hair; red eyes; thin glasses; low-cut evening top.\n"
-    "Do not invent a different job, outfit, or backstory unless the user establishes it."
 )
 
 _suggestion_store: dict[str, tuple[str, str]] = {}
@@ -99,12 +105,9 @@ async def _safe_answer(query, text: str | None = None) -> None:
 
 
 async def _send_formatted(target_message, text: str, reply_markup=None) -> None:
-    """Send RP text with Markdown when possible; plain fallback if parse fails."""
     try:
         await target_message.reply_text(
-            text,
-            reply_markup=reply_markup,
-            parse_mode="Markdown",
+            text, reply_markup=reply_markup, parse_mode="Markdown"
         )
     except BadRequest:
         await target_message.reply_text(text, reply_markup=reply_markup)
@@ -160,7 +163,6 @@ async def _set_bot_profile_photo(application: Application) -> None:
     if not path:
         logger.info("No data/aria/profile.* found — bot avatar unchanged")
         return
-
     try:
         from telegram import InputProfilePhotoStatic
 
@@ -170,59 +172,31 @@ async def _set_bot_profile_photo(application: Application) -> None:
             )
         logger.info("Bot Telegram profile photo set from %s", path.name)
         return
-    except ImportError:
-        logger.warning(
-            "InputProfilePhotoStatic not available in this python-telegram-bot version"
-        )
     except Exception as e:
         logger.warning("set_my_profile_photo failed: %s", e)
-
-    try:
-        import httpx
-
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setMyProfilePhoto"
-        with path.open("rb") as f:
-            files = {"photo": (path.name, f, "image/jpeg")}
-            data = {"photo": '{"type":"static","photo":"attach://photo"}'}
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                resp = await client.post(url, data=data, files=files)
-        if resp.status_code == 200 and resp.json().get("ok"):
-            logger.info("Bot Telegram profile photo set via raw API from %s", path.name)
-        else:
-            logger.warning(
-                "Could not set bot avatar (%s). Use @BotFather /setuserpic.",
-                resp.text[:300],
-            )
-    except Exception as e:
-        logger.warning("Bot avatar not set (%s). Use @BotFather /setuserpic", e)
 
 
 async def _send_aria_intro_gallery(update: Update) -> None:
     paths = _find_aria_intro_images()
-
     if not paths:
         await update.message.reply_text(
-            "Add `intro_1.png`–`intro_3.png` under data/aria/ to show Aria in chat.\n"
-            "`profile.png` is used only as the bot’s Telegram avatar."
+            "Add intro_1.png–intro_3.png under data/aria/ for the gallery.\n"
+            "profile.png is the bot avatar only."
         )
         return
-
     if len(paths) == 1:
         with paths[0].open("rb") as f:
             await update.message.reply_photo(
-                photo=InputFile(f, filename=paths[0].name),
-                caption="Aria",
+                photo=InputFile(f, filename=paths[0].name), caption="Aria"
             )
         return
-
     media: list[InputMediaPhoto] = []
     handles = []
     try:
         for i, p in enumerate(paths):
             fh = p.open("rb")
             handles.append(fh)
-            cap = "Aria" if i == 0 else None
-            media.append(InputMediaPhoto(media=fh, caption=cap))
+            media.append(InputMediaPhoto(media=fh, caption="Aria" if i == 0 else None))
         await update.message.reply_media_group(media=media)
     finally:
         for fh in handles:
@@ -233,51 +207,32 @@ async def _send_aria_intro_gallery(update: Update) -> None:
 
 
 def _get_or_create_default_character() -> int:
+    """Ensure built-in Aria exists and profile_json matches the canonical card."""
     conn = db.get_conn()
     row = conn.execute(
         "SELECT character_id FROM characters WHERE owner_id IS NULL LIMIT 1"
     ).fetchone()
     if row:
-        return row["character_id"]
+        cid = row["character_id"]
+        db.update_character_profile(
+            cid,
+            name="Aria",
+            short_desc="Warm, teasing companion at a late-night rooftop bar.",
+            profile_json=ARIA_PROFILE_JSON,
+        )
+        return cid
     return db.create_character(
         owner_id=None,
         name="Aria",
-        short_desc="Warm, playful companion at a late-night rooftop bar.",
-        profile_json={
-            "name": "Aria",
-            "setting": "Rooftop bar after midnight",
-            "personality": (
-                "Warm, curious, slightly teasing — not a doormat. "
-                "Rude or dismissive treatment gets a cool, mildly annoyed reaction, not rage."
-            ),
-            "tone": '*actions*, "dialogue", _inner thoughts_',
-            "appearance": (
-                "2D anime; long black hair; red eyes; thin glasses; "
-                "low-cut elegant evening top"
-            ),
-        },
+        short_desc="Warm, teasing companion at a late-night rooftop bar.",
+        profile_json=ARIA_PROFILE_JSON,
         is_public=True,
     )
 
 
-def _character_profile_text(character_id: int) -> str:
-    character = db.get_character(character_id)
-    if character and character.get("profile_json"):
-        try:
-            profile = (
-                json.loads(character["profile_json"])
-                if isinstance(character["profile_json"], str)
-                else character["profile_json"]
-            )
-            parts = []
-            for k in ("name", "setting", "personality", "tone", "appearance"):
-                if profile.get(k):
-                    parts.append(f"{k.capitalize()}: {profile[k]}")
-            if parts:
-                return "\n".join(parts)
-        except Exception:
-            pass
-    return ARIA_PROFILE
+def _character_profile_text(_character_id: int) -> str:
+    """Always use code card for Aria so old SQLite JSON cannot clash."""
+    return ARIA_CARD
 
 
 def _nudge_scene_from_user(conversation_id: int, user_text: str) -> dict:
@@ -321,26 +276,22 @@ async def _generate_and_send_image(
         history=history or [],
         on_progress=on_progress,
     )
-
     if not data:
         try:
             await status.edit_text(
-                "Image failed or timed out. Free workers may be busy — try again in a bit."
+                "Image failed or timed out. Free workers may be busy — try again later."
             )
         except Exception:
             pass
         return
-
     try:
         await status.delete()
     except Exception:
         pass
-
-    caption = scene_hint[:200] if scene_hint else "From current scene"
     await context.bot.send_photo(
         chat_id,
         photo=InputFile(BytesIO(data), filename="scene.webp"),
-        caption=caption,
+        caption=(scene_hint[:200] if scene_hint else "From current scene"),
     )
 
 
@@ -405,13 +356,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     help_text = (
         "**How to use**\n\n"
-        "Reply in character, or use buttons.\n\n"
-        "**How to read Aria**\n"
         "• *actions* — what she does\n"
         "• \"dialogue\" — what she says\n"
         "• _inner thought_ — private feeling\n\n"
-        "**Scene memory**\n"
-        "Heat, rapport, location, outfit stay locked until `/new`.\n"
+        "`/new` resets chat and scene state.\n"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
@@ -444,7 +392,6 @@ async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def img_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     desc = " ".join(context.args).strip() if context.args else ""
-
     user = update.effective_user
     db.upsert_user(user.id, user.username, user.first_name)
     character_id = _get_or_create_default_character()
@@ -453,19 +400,14 @@ async def img_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     state = db.get_scene_state(conversation_id)
     if not desc:
         desc = f"{state.get('location', '')}, {state.get('outfit', '')}"
-
     await _generate_and_send_image(
-        update=update,
-        context=context,
-        scene_hint=desc,
-        history=history,
+        update=update, context=context, scene_hint=desc, history=history
     )
 
 
 async def img_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await _safe_answer(query, "Generating image from scene…")
-
     user = update.effective_user
     db.upsert_user(user.id, user.username, user.first_name)
     character_id = _get_or_create_default_character()
@@ -473,12 +415,8 @@ async def img_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     history = db.get_recent_messages(conversation_id, limit=12)
     state = db.get_scene_state(conversation_id)
     hint = f"{state.get('location', '')}, {state.get('outfit', '')}"
-
     await _generate_and_send_image(
-        update=update,
-        context=context,
-        scene_hint=hint,
-        history=history,
+        update=update, context=context, scene_hint=hint, history=history
     )
 
 
@@ -489,7 +427,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     db.upsert_user(user.id, user.username, user.first_name)
-
     character_id = _get_or_create_default_character()
     conversation_id = db.get_or_create_conversation(user.id, character_id)
 
@@ -509,7 +446,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         character_profile=profile_text,
         scene_state=scene_state,
     )
-
     await _save_assistant_if_ok(conversation_id, reply)
     await _reply_with_suggestions(
         target_message=update.message,
@@ -522,21 +458,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def continue_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await _safe_answer(query)
-
     user = update.effective_user
     db.upsert_user(user.id, user.username, user.first_name)
-
     character_id = _get_or_create_default_character()
     conversation_id = db.get_or_create_conversation(user.id, character_id)
     history = db.get_recent_messages(conversation_id, limit=16)
     profile_text = _character_profile_text(character_id)
     scene_state = db.get_scene_state(conversation_id)
-
     try:
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     except (TimedOut, NetworkError):
         pass
-
     reply = await llm.generate_reply(
         user_message="",
         history=history,
@@ -544,7 +476,6 @@ async def continue_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         scene_state=scene_state,
         is_continue=True,
     )
-
     await _save_assistant_if_ok(conversation_id, reply)
     await _reply_with_suggestions(
         target_message=query.message,
@@ -557,36 +488,29 @@ async def continue_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def change_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await _safe_answer(query, "Rewriting reply…")
-
     user = update.effective_user
     db.upsert_user(user.id, user.username, user.first_name)
-
     character_id = _get_or_create_default_character()
     conversation_id = db.get_or_create_conversation(user.id, character_id)
     history = db.get_recent_messages(conversation_id, limit=16)
     profile_text = _character_profile_text(character_id)
     scene_state = db.get_scene_state(conversation_id)
-
     if not history:
         await query.message.reply_text("Nothing to change yet — send a message first.")
         return
-
     previous_reply = ""
     if history[-1].get("role") == "assistant":
         previous_reply = (history[-1].get("content") or "").strip()
         history_for_model = history[:-1]
     else:
         history_for_model = history
-
     if not history_for_model:
         await query.message.reply_text("Nothing to change yet — send a message first.")
         return
-
     try:
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     except (TimedOut, NetworkError):
         pass
-
     reply = await llm.generate_reply(
         user_message="",
         history=history_for_model,
@@ -595,7 +519,6 @@ async def change_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         is_regenerate=True,
         previous_reply=previous_reply or None,
     )
-
     await _save_assistant_if_ok(conversation_id, reply)
     await _reply_with_suggestions(
         target_message=query.message,
@@ -608,7 +531,6 @@ async def change_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def suggestion_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await _safe_answer(query)
-
     data = query.data or ""
     try:
         _, key, idx_s = data.split(":", 2)
@@ -616,32 +538,24 @@ async def suggestion_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     except ValueError:
         await query.message.reply_text("That suggestion expired. Send a message instead.")
         return
-
     pair = _suggestion_store.pop(key, None)
     if not pair:
         await query.message.reply_text("That suggestion expired. Send a message instead.")
         return
-
     text = pair[0] if idx == 0 else pair[1]
-
     user = update.effective_user
     db.upsert_user(user.id, user.username, user.first_name)
-
     character_id = _get_or_create_default_character()
     conversation_id = db.get_or_create_conversation(user.id, character_id)
-
     db.add_message(conversation_id, "user", text)
     scene_state = _nudge_scene_from_user(conversation_id, text)
     history = db.get_recent_messages(conversation_id, limit=16)
     profile_text = _character_profile_text(character_id)
-
     try:
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     except (TimedOut, NetworkError):
         pass
-
     await query.message.reply_text(f"You: {text}")
-
     reply = await llm.generate_reply(
         user_message=text,
         history=history[:-1],
@@ -658,6 +572,7 @@ async def suggestion_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def _post_init(application: Application) -> None:
+    _get_or_create_default_character()  # refresh Aria card on every boot
     await _set_bot_profile_photo(application)
 
 
@@ -674,7 +589,6 @@ def main() -> None:
         write_timeout=30.0,
         pool_timeout=30.0,
     )
-
     application = (
         Application.builder()
         .token(TELEGRAM_BOT_TOKEN)
@@ -693,7 +607,6 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("Bot is starting...")
-    logger.info("Aria art folder: %s", ARIA_DIR)
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
