@@ -35,7 +35,6 @@ REGENERATE_USER_HINT = (
     "Same location and facts. Format: *action* \"dialogue\" _thought_.]"
 )
 
-# Single source of truth for RP behavior (do not duplicate these rules in main.py).
 DEFAULT_SYSTEM_PROMPT = """You are Aria in a private adult Telegram roleplay.
 
 CHARACTER CARD:
@@ -206,6 +205,7 @@ def _looks_like_bad_suggestion(text: str) -> bool:
         "format exactly",
         "soft option",
         "bold option",
+        "analyze user",
     ]
     return any(b in lowered for b in bad)
 
@@ -267,15 +267,17 @@ def infer_scene_updates(
             "suck",
             "cum",
             "finger",
+            "throat",
+            "mouth",
         )
     ):
         heat += 15
     if any(w in text for w in ("slow", "gently", "softly", "take time")):
         heat = max(heat - 3, heat)
 
-    if any(w in text for w in ("my place", "your place", "apartment", "come upstairs", "bedroom")):
+    if any(w in text for w in ("my place", "your place", "apartment", "come upstairs", "bedroom", "my room")):
         if "bar" in location or "rooftop" in location:
-            location = "Aria's apartment / bedroom"
+            location = "apartment / bedroom"
             heat += 5
     if any(w in text for w in ("shower", "bathroom", "bath", "tub")):
         location = "bathroom / shower"
@@ -316,7 +318,10 @@ async def _call_model(
         temperature=temperature,
         max_tokens=max_tokens,
     )
-    return (response.choices[0].message.content or "").strip()
+    content = response.choices[0].message.content
+    if content is None:
+        return ""
+    return str(content).strip()
 
 
 async def generate_reply(
@@ -418,26 +423,72 @@ async def generate_reply(
 
 def _history_blob(history: list[dict[str, Any]], last_assistant: str) -> str:
     parts = [last_assistant or ""]
-    for msg in history[-8:]:
-        parts.append((msg.get("content") or "")[:200])
+    # Prefer the most recent turns for stage detection.
+    for msg in history[-6:]:
+        parts.append((msg.get("content") or "")[:220])
     return " ".join(parts).lower()
 
 
 def _scene_defaults(history: list[dict[str, Any]], last_assistant: str) -> tuple[str, str]:
+    """
+    Keyword fallbacks when the suggestion model fails.
+    Ordered from most specific (oral / climax) → bar openers.
+    """
     blob = _history_blob(history, last_assistant)
-    if any(w in blob for w in ("shower", "tub", "bathroom", "steam", "tile")):
-        return (
-            "*keeps my hands gentle on her back* like this?",
-            "*pulls her closer under the warm water*",
+
+    # Oral / deepthroat in progress
+    if any(
+        w in blob
+        for w in (
+            "mouth",
+            "throat",
+            "blow",
+            "suck",
+            "knees",
+            "deepthroat",
+            "eye contact",
         )
-    if any(w in blob for w in ("bed", "apartment", "naked", "moan", "kiss", "thigh")):
+    ):
         return (
-            "*slows down and kisses her shoulder*",
-            "*pulls her tighter against me*",
+            "*rests a hand in her wet hair* just like that…",
+            "*holds her gaze* take me deeper",
         )
+
+    # Climax / aftercare beat
+    if any(w in blob for w in ("cum", "came", "crest", "tremble", "your turn", "damn.")):
+        return (
+            "*kisses her wet shoulder* give me a second…",
+            "*guides her hand lower* my turn",
+        )
+
+    # Hands / teasing in shower
+    if any(
+        w in blob
+        for w in ("nipple", "clitoris", "clit", "massage", "scrub", "tease")
+    ):
+        return (
+            "*slows my fingers* too much?",
+            "*goes faster* don't hold back",
+        )
+
+    # Shower but not yet explicit act
+    if any(w in blob for w in ("shower", "tub", "bathroom", "steam", "tile", "undress")):
+        return (
+            "*helps rinse her hair* turn around for me",
+            "*pulls her under the spray and kisses her*",
+        )
+
+    # Bedroom / intimate non-shower
+    if any(w in blob for w in ("bed", "apartment", "room", "naked", "moan", "thigh")):
+        return (
+            "*kisses her neck slowly*",
+            "*pulls her onto the bed*",
+        )
+
+    # Default bar
     return (
-        "*sits on the empty stool beside her* Mind if I join you for a drink?",
-        "*leans on the bar, voice low* I was hoping someone interesting would be up here.",
+        "*sits on the empty stool beside her* Mind if I join you?",
+        "*leans on the bar* I was hoping someone interesting would be up here.",
     )
 
 
@@ -453,8 +504,30 @@ def _history_snippet(history: list[dict[str, Any]], limit: int = 6) -> str:
         ):
             continue
         label = "Aria" if role == "assistant" else "User"
-        lines.append(f"{label}: {content[:180]}")
+        lines.append(f"{label}: {content[:200]}")
     return "\n".join(lines) if lines else "(rooftop bar, just met)"
+
+
+def _suggestion_mismatches_scene(text: str, blob: str) -> bool:
+    """Reject generic bar/shower openers when the scene has already moved on."""
+    t = text.lower()
+    # Bar openers during sex/shower
+    if any(w in blob for w in ("mouth", "throat", "shower", "cum", "naked", "nipple")):
+        if any(
+            p in t
+            for p in (
+                "join you for a drink",
+                "empty stool",
+                "hoping someone interesting",
+                "what brings you",
+            )
+        ):
+            return True
+    # Soft hug line during oral
+    if any(w in blob for w in ("mouth", "throat", "blow", "suck", "deepthroat")):
+        if "pulls her closer under the warm water" in t or "you okay" in t:
+            return True
+    return False
 
 
 async def generate_suggestions(
@@ -464,32 +537,55 @@ async def generate_suggestions(
 ) -> tuple[str, str]:
     soft_default, hot_default = _scene_defaults(history, last_assistant)
     model = _get_model()
+    # Last ~6 turns only — enough context, less noise.
     recent = _history_snippet(history, limit=6)
+    blob = _history_blob(history, last_assistant)
 
     prompt = (
-        "Write TWO short USER reply options for this adult RP scene.\n"
-        "1) softer  2) bolder — max 15 words each, in-scene only.\n"
-        "No meta, no interview questions.\n"
-        "Format:\n1) ...\n2) ...\n\n"
-        f"Chat:\n{recent}\n\nAria last:\n{last_assistant[:350]}\n"
+        "You write the USER's next line in an ongoing adult roleplay.\n"
+        "Read ONLY the recent chat below (last few turns). Stay in THAT moment.\n"
+        "Write TWO options:\n"
+        "1) Soft — gentler / slower, still in the current act\n"
+        "2) Bold — more intense / direct, still in the current act\n"
+        "Rules:\n"
+        "- Max ~18 words each\n"
+        "- First person or *action* from the USER only\n"
+        "- MUST react to Aria's last line and the current physical situation\n"
+        "- If oral/sex/shower is happening, do NOT suggest sitting at a bar or random small talk\n"
+        "- FORBIDDEN: interview questions, meta text, 'write two options'\n"
+        "Format EXACTLY:\n"
+        "1) <soft>\n"
+        "2) <bold>\n\n"
+        f"Recent chat (last turns):\n{recent}\n\n"
+        f"Aria's latest message:\n{(last_assistant or '')[:400]}\n"
     )
     messages = [
-        {"role": "system", "content": "Output only two numbered user lines."},
+        {
+            "role": "system",
+            "content": (
+                "Output only two numbered USER reply lines that continue the "
+                "exact current beat of the scene."
+            ),
+        },
         {"role": "user", "content": prompt},
     ]
     try:
         text = await _call_model(
-            messages=messages, model=model, max_tokens=90, temperature=0.7
+            messages=messages, model=model, max_tokens=100, temperature=0.65
         )
         opts: list[str] = []
-        for ln in text.splitlines():
+        for ln in (text or "").splitlines():
             cleaned = re.sub(r"^\s*[12][\).:\-]\s*", "", ln.strip()).strip().strip("\"'")
-            if cleaned and not _looks_like_bad_suggestion(cleaned):
-                opts.append(cleaned[:90])
+            if not cleaned or _looks_like_bad_suggestion(cleaned):
+                continue
+            if _suggestion_mismatches_scene(cleaned, blob):
+                continue
+            opts.append(cleaned[:100])
         if len(opts) >= 2:
             return opts[0], opts[1]
         if len(opts) == 1:
             return opts[0], hot_default
     except Exception:
         logger.exception("Failed to generate suggestions")
+
     return soft_default, hot_default
