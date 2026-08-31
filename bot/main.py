@@ -47,6 +47,10 @@ BOT_WELCOME = (
     "💖 **HoneyChat / Lucid RP** — private 18+ AI roleplay\n\n"
     "Talk dirty or deep. Stay in a scene.\n\n"
     "⚠️ Adults only (18+).\n\n"
+    "How Aria writes:\n"
+    "• *actions* — body language\n"
+    "• \"dialogue\" — spoken words\n"
+    "• _inner thought_ — private feeling\n\n"
     "Buttons under replies:\n"
     "• **Continue** — advance the scene\n"
     "• **Change** — different reply for the same moment\n"
@@ -55,26 +59,28 @@ BOT_WELCOME = (
     "/start — welcome + meet Aria\n"
     "/help — how to use\n"
     "/new — reset memory + scene state\n"
-    "/img — image from current scene (or `/img your details`)\n"
-    "Bot avatar: data/aria/profile.png · Intro gallery: intro_1–3"
+    "/img — image from current scene\n"
 )
 
+# Telegram Markdown: *bold-ish actions we use as actions*, _italic thoughts_
 ARIA_SCENE_INTRO = (
-    "🌙 **Aria**\n\n"
+    "🌙 *Aria*\n\n"
     "A quiet rooftop bar after midnight. Soft music, city lights below, "
     "one empty stool beside a woman who looks like she's been waiting for something "
     "interesting to happen.\n\n"
-    "Aria turns toward you — warm eyes, a small playful smile, glass in hand.\n\n"
-    "*tilts her head, studying you* *curious, a little amused*\n"
-    "You're new here… or at least, I haven't seen you around. "
-    "What brings you up here tonight?"
+    "*turns toward you, warm eyes, a small playful smile, glass in hand*\n"
+    '"You\'re new here… or at least, I haven\'t seen you around. "'
+    '"What brings you up here tonight?"\n'
+    "_Cute. Let's see if he's interesting or just loud._"
 )
 
 ARIA_PROFILE = (
     "Name: Aria\n"
     "Setting: Rooftop bar after midnight; city lights; intimate, low-key mood.\n"
-    "Personality: Warm, curious, slightly teasing. Builds atmosphere before escalating.\n"
-    "Tone: Short-to-medium replies with *actions*, dialogue, and a brief feeling/thought.\n"
+    "Personality: Warm, curious, slightly teasing — but not a doormat. "
+    "If treated rudely or dismissed, she cools off with mild annoyance or dry pride, "
+    "not rage and not fake sweetness.\n"
+    "Tone: *actions*, \"dialogue\", _inner thoughts_.\n"
     "Appearance: 2D anime; long black hair; red eyes; thin glasses; low-cut evening top.\n"
     "Do not invent a different job, outfit, or backstory unless the user establishes it."
 )
@@ -90,6 +96,18 @@ async def _safe_answer(query, text: str | None = None) -> None:
             await query.answer()
     except (TimedOut, NetworkError, BadRequest) as e:
         logger.warning("callback answer failed (ignored): %s", e)
+
+
+async def _send_formatted(target_message, text: str, reply_markup=None) -> None:
+    """Send RP text with Markdown when possible; plain fallback if parse fails."""
+    try:
+        await target_message.reply_text(
+            text,
+            reply_markup=reply_markup,
+            parse_mode="Markdown",
+        )
+    except BadRequest:
+        await target_message.reply_text(text, reply_markup=reply_markup)
 
 
 def _rp_keyboard(soft: str | None = None, bold: str | None = None, key: str | None = None) -> InlineKeyboardMarkup:
@@ -229,10 +247,10 @@ def _get_or_create_default_character() -> int:
             "name": "Aria",
             "setting": "Rooftop bar after midnight",
             "personality": (
-                "Warm, curious, slightly teasing. Builds atmosphere before escalating. "
-                "Matches the user's pace. Does not invent past shared history."
+                "Warm, curious, slightly teasing — not a doormat. "
+                "Rude or dismissive treatment gets a cool, mildly annoyed reaction, not rage."
             ),
-            "tone": "Short-to-medium replies with actions, dialogue, and a brief feeling.",
+            "tone": '*actions*, "dialogue", _inner thoughts_',
             "appearance": (
                 "2D anime; long black hair; red eyes; thin glasses; "
                 "low-cut elegant evening top"
@@ -263,7 +281,6 @@ def _character_profile_text(character_id: int) -> str:
 
 
 def _nudge_scene_from_user(conversation_id: int, user_text: str) -> dict:
-    """Update heat/rapport/location/outfit from the user's latest line."""
     current = db.get_scene_state(conversation_id)
     updated = llm.infer_scene_updates(user_text=user_text, current=current)
     return db.update_scene_state(
@@ -345,7 +362,8 @@ async def _reply_with_suggestions(
         for old in list(_suggestion_store.keys())[:50]:
             _suggestion_store.pop(old, None)
 
-    await target_message.reply_text(
+    await _send_formatted(
+        target_message,
         reply,
         reply_markup=_rp_keyboard(soft, bold, key),
     )
@@ -362,9 +380,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     await update.message.reply_text(BOT_WELCOME, parse_mode="Markdown")
     await _send_aria_intro_gallery(update)
-    await update.message.reply_text(
+    await _send_formatted(
+        update.message,
         ARIA_SCENE_INTRO,
-        parse_mode="Markdown",
         reply_markup=_rp_keyboard(
             "*sits beside her* Just looking for a quiet drink.",
             "*smirks* Looking for trouble. Found any?",
@@ -388,14 +406,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     help_text = (
         "**How to use**\n\n"
         "Reply in character, or use buttons.\n\n"
-        "**Buttons**\n"
-        "• Continue / Change / Soft / Bold / Image\n\n"
+        "**How to read Aria**\n"
+        "• *actions* — what she does\n"
+        "• \"dialogue\" — what she says\n"
+        "• _inner thought_ — private feeling\n\n"
         "**Scene memory**\n"
-        "Aria tracks heat, rapport, location, and outfit so replies stay consistent.\n"
-        "`/new` resets chat **and** scene state.\n\n"
-        "**Aria images**\n"
-        "• `data/aria/profile.png` → bot Telegram avatar\n"
-        "• `data/aria/intro_1.png` … `intro_3.png` → shown on /start\n"
+        "Heat, rapport, location, outfit stay locked until `/new`.\n"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
@@ -406,14 +422,14 @@ async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     character_id = _get_or_create_default_character()
     conversation_id = db.get_or_create_conversation(user.id, character_id)
-    db.clear_conversation(conversation_id)  # also resets scene state
+    db.clear_conversation(conversation_id)
 
     db.add_message(conversation_id, "assistant", ARIA_SCENE_INTRO)
     await update.message.reply_text("Memory and scene state cleared. Starting fresh with Aria…")
     await _send_aria_intro_gallery(update)
-    await update.message.reply_text(
+    await _send_formatted(
+        update.message,
         ARIA_SCENE_INTRO,
-        parse_mode="Markdown",
         reply_markup=_rp_keyboard(
             "*sits beside her* Just looking for a quiet drink.",
             "*smirks* Looking for trouble. Found any?",
