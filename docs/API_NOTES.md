@@ -1,6 +1,6 @@
 # API Notes
 
-Reference for APIs used in this project.
+Reference for APIs and internal systems used in this project.
 
 ---
 
@@ -18,7 +18,34 @@ Reference for APIs used in this project.
 ### Notes
 - Free models are rate-limited and change over time.
 - Prefer `openrouter/free` so one busy model does not block the bot.
-- Prompt rules in `bot/services/llm.py` handle short replies, no scene-skip, explicit vocab matching, and leak retries.
+- Prompt rules in `bot/services/llm.py` handle atmosphere, feelings, no scene-skip, explicit vocab matching, leak retries, and **scene state injection**.
+
+---
+
+## DeepSeek (optional RP)
+
+- **Env**: `DEEPSEEK_API_KEY`, optional `DEEPSEEK_MODEL` (default `deepseek-chat`)
+- Used automatically if key is set (unless `LLM_PROVIDER=openrouter`)
+- Official API is **not** free long-term; balance required
+
+---
+
+## Scene state (internal — not an external API)
+
+Stored per conversation in SQLite (`conversations` table):
+
+| Column | Range / default | Role |
+|--------|-----------------|------|
+| `heat` | 0–100, default 0 | Explicit intensity → reply length & tone |
+| `rapport` | 0–100, default 15 | Closeness |
+| `location` | text | Locked place |
+| `outfit` | text | Locked clothes |
+| `scene_notes` | text | Optional freeform facts |
+
+Updated by `llm.infer_scene_updates()` from user text keywords, then passed into `generate_reply(..., scene_state=...)`.  
+`/new` and `clear_conversation` reset to rooftop defaults.
+
+Inspired by stateful RP bots (e.g. trust/emotion continuity) but **consensual Aria-only** — no coercion systems.
 
 ---
 
@@ -33,31 +60,18 @@ Reference for APIs used in this project.
   - `AI_HORDE_MODEL` (default `Nova Anime XL`)
 
 ### Current bot settings (`bot/services/image_gen.py`)
-- Prompt style aligned with JustAAA tests (quality tags + Aria visual lock + scene)
+- Prompt style: quality tags + Aria visual lock + scene
 - Prefer **Nova Anime XL**
-- Sizes tried in order: **768×768** → **512×768** → any worker 512×768
+- Sizes: **768×768** → **512×768** → any worker 512×768
 - Sampler: `k_euler`, CFG 5, steps 20–25, clip skip 2
-- Progress messages while queued
+
+### Local art (preferred for /start)
+- `data/aria/profile.png` → Telegram **bot avatar** via `setMyProfilePhoto`
+- `data/aria/intro_1.png` … `intro_3.png` → in-chat gallery only
 
 ### Kudos / resolution limits
-- Jobs that are too large or use expensive samplers can return **403 `KudosUpfront`**
-- Example: 1024×1024 + `k_dpmpp_sde` required ~56 kudos and was rejected on a low-kudos key
+- Large jobs can return **403 `KudosUpfront`**
 - Stay on smaller resolutions unless the account has enough kudos
-
-### CivitAI vs Horde
-- **CivitAI** hosts model files (e.g. Nova Anime XL) and has its own website generator with separate filters
-- **AI Horde** runs volunteer workers that already loaded those models; generation does **not** go through CivitAI
-- NSFW on Horde works because Horde allows adult content, not because it “bypasses CivitAI”
-
-### Experiment: auto-pick any worker (reverted)
-- Tried selecting the fastest live model / empty `models: []` for shorter queues
-- Result in practice: **not better** for this project (style inconsistent, waits still long)
-- **Reverted** to Nova-first with size fallbacks (Aug 28, 2026)
-- Keep for future reference only if we later need max speed over consistency
-
-### Status API (optional future use)
-- `GET /api/v2/status/models?type=image` lists workers, queue, ETA per model
-- Can be used again to pick a live model, but empty `models` = any worker is usually the only true “fast path”
 
 ---
 
@@ -71,4 +85,4 @@ Reference for APIs used in this project.
 
 ---
 
-Last Updated: August 28, 2026
+Last Updated: August 31, 2026
