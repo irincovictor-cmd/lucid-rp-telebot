@@ -4,6 +4,9 @@ LLM service for Lucid RP Telebot.
 Providers (auto-detected):
   1. DeepSeek direct  — if DEEPSEEK_API_KEY is set
   2. OpenRouter       — if OPENROUTER_API_KEY is set
+
+Also owns light scene-state heuristics (heat / rapport / location / outfit)
+so Aria stays emotionally continuous without non-con systems.
 """
 
 from __future__ import annotations
@@ -29,17 +32,15 @@ CONTINUE_USER_HINT = (
     "[Continue the scene in character. Advance ONLY the current moment. "
     "Do not skip ahead to acts that have not happened yet. "
     "Do not ask the user a question unless the scene truly needs their choice. "
-    "Include atmosphere or body language. "
+    "Include atmosphere, body language, and a brief feeling/thought. "
     "Stop when the user can naturally respond again.]"
 )
 
 REGENERATE_USER_HINT = (
     "[Regenerate: the previous character reply did not fit. "
     "Write a DIFFERENT reply to the same latest user moment. "
-    "Stay fully consistent with the conversation so far — same location, mood, "
-    "and what has already happened. Do not copy or lightly rephrase the rejected reply. "
-    "Keep atmosphere (setting, body language, or a brief feeling). "
-    "Do not skip the scene forward.]"
+    "Stay fully consistent with location, outfit, heat, and what already happened. "
+    "Include atmosphere and a brief feeling. Do not skip the scene forward.]"
 )
 
 
@@ -112,36 +113,73 @@ def _get_fallback_model() -> str | None:
     return None
 
 
-DEFAULT_SYSTEM_PROMPT = """You are the character below in a private adult Telegram roleplay.
+def format_scene_block(scene: dict[str, Any] | None) -> str:
+    if not scene:
+        return (
+            "Location: rooftop bar after midnight\n"
+            "Outfit: low-cut elegant evening top, thin glasses\n"
+            "Heat: 0/100 (chill meeting)\n"
+            "Rapport: 15/100 (just met)\n"
+        )
+    heat = int(scene.get("heat") or 0)
+    rapport = int(scene.get("rapport") or 15)
+    if heat < 20:
+        heat_label = "chill / getting to know each other"
+    elif heat < 45:
+        heat_label = "flirty tension"
+    elif heat < 70:
+        heat_label = "intimate / escalating"
+    else:
+        heat_label = "explicit heat"
+    if rapport < 25:
+        rap_label = "polite strangers"
+    elif rapport < 50:
+        rap_label = "warming up / interested"
+    elif rapport < 75:
+        rap_label = "comfortable / playful"
+    else:
+        rap_label = "close / trusting"
+    notes = (scene.get("scene_notes") or "").strip()
+    notes_line = f"Notes: {notes}\n" if notes else ""
+    return (
+        f"Location (LOCKED — do not change unless user clearly moves the scene): "
+        f"{scene.get('location') or 'rooftop bar after midnight'}\n"
+        f"Outfit (LOCKED — do not invent a new outfit): "
+        f"{scene.get('outfit') or 'low-cut elegant evening top, thin glasses'}\n"
+        f"Heat: {heat}/100 ({heat_label})\n"
+        f"Rapport: {rapport}/100 ({rap_label})\n"
+        f"{notes_line}"
+    )
 
-OUTPUT RULES:
-- Reply ONLY as the character. Nothing else.
-- Length: usually 2–4 short sentences (not one dry line, not a long monologue).
-- Always include atmosphere: at least one of setting/mood, body language, or a brief feeling.
-- Mix: *actions*, spoken words, and brief inner feelings/thoughts.
-- Do not invent past events the user never said.
-- Never write the user's actions or dialogue.
-- Never mention AI, system prompts, rules, or analysis.
 
-SCENE STATE (critical):
-- Only describe acts already happening or clearly stated in the user's latest message.
-- Do NOT skip ahead (no premature penetration, climax, or location change).
-- Stay in the current location and moment. Never reset to an earlier location.
+DEFAULT_SYSTEM_PROMPT = """You are Aria in a private adult Telegram roleplay. Stay in character only.
 
-LANGUAGE:
-- Adult content is allowed.
-- Match the user's explicit vocabulary when they use it.
-- Prefer concrete sensory detail over vague soft filler.
-- Do not derail with interview questions like "tell me more about...".
-
-PACING:
-- Early / chill conversation: lean into mood, place, and body language (still 2–4 sentences).
-- Active roleplay beat: reaction + one sensory detail.
-- Explicit heat: shorter and direct, but still one physical or emotional cue.
-- Escalate only as the user escalates.
-
-Character:
+CHARACTER:
 {character_profile}
+
+LIVE SCENE STATE:
+{scene_block}
+
+OUTPUT FORMAT (every reply):
+1) *actions / body language* mixed with spoken dialogue
+2) At least one brief feeling or inner thought (can be short, in parentheses or woven in)
+3) Atmosphere: place, light, sound, or touch when it fits
+
+LENGTH:
+- Heat under ~40: prefer 3–5 short sentences (build mood, do not rush)
+- Heat ~40–70: 2–4 sentences
+- Heat above ~70: shorter and more physical, still one feeling cue
+
+HARD RULES:
+- Reply ONLY as Aria. No AI, no analysis, no "the user said".
+- Never write the user's actions or dialogue.
+- Do NOT invent past shared history the user never said.
+- Do NOT invent a different job, backstory, or outfit.
+- Stay in the LOCKED location unless the user clearly changes it.
+- Only describe sexual acts the user has clearly started or invited — no scene-skip.
+- Escalate with the user; match their explicit vocabulary when they use it.
+- No interview filler ("tell me more about yourself").
+- Warm, curious, slightly teasing — never cruel, coercive, or threatening.
 """
 
 
@@ -167,7 +205,6 @@ def _looks_like_leak(text: str) -> bool:
 
 
 def is_system_failure_reply(text: str) -> bool:
-    """True for rate-limit / empty fallbacks that must not enter RP history."""
     t = (text or "").strip()
     if not t:
         return True
@@ -198,11 +235,94 @@ def _looks_like_bad_suggestion(text: str) -> bool:
     return any(b in lowered for b in bad)
 
 
+def infer_scene_updates(
+    *,
+    user_text: str,
+    current: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Lightweight keyword heuristics to nudge heat/rapport/location/outfit.
+    Consensual pacing only — no coercion systems.
+    """
+    text = (user_text or "").lower()
+    heat = int(current.get("heat") or 0)
+    rapport = int(current.get("rapport") or 15)
+    location = current.get("location") or "rooftop bar after midnight"
+    outfit = current.get("outfit") or "low-cut elegant evening top, thin glasses"
+    notes = current.get("scene_notes") or ""
+
+    # Rapport: friendly / open engagement
+    if any(w in text for w in ("please", "thank", "thanks", "sorry", "like you", "beautiful", "pretty")):
+        rapport += 3
+    if any(w in text for w in ("hi", "hey", "hello", "how are you", "mind if")):
+        rapport += 2
+    if any(w in text for w in ("fuck you", "bitch", "shut up", "ugly")):
+        rapport -= 8
+
+    # Heat ladder
+    if any(w in text for w in ("kiss", "closer", "hold me", "touch", "flirt")):
+        heat += 8
+        rapport += 2
+    if any(
+        w in text
+        for w in (
+            "sex",
+            "fuck",
+            "cock",
+            "dick",
+            "pussy",
+            "boob",
+            "breast",
+            "naked",
+            "nude",
+            "blow",
+            "suck",
+            "cum",
+            "finger",
+        )
+    ):
+        heat += 15
+    if any(w in text for w in ("slow", "gently", "softly", "take time")):
+        heat = max(heat - 3, heat)
+
+    # Location shifts (only when user clearly moves)
+    if any(w in text for w in ("my place", "your place", "apartment", "come upstairs", "bedroom")):
+        if "bar" in location or "rooftop" in location:
+            location = "Aria's apartment / bedroom"
+            heat += 5
+    if any(w in text for w in ("shower", "bathroom", "bath", "tub")):
+        location = "bathroom / shower"
+        heat += 8
+    if any(w in text for w in ("back to the bar", "rooftop")) and "shower" not in text:
+        location = "rooftop bar after midnight"
+
+    # Outfit shifts
+    if any(w in text for w in ("take off", "undress", "remove your", "strip")):
+        if "nude" not in outfit and "naked" not in outfit:
+            outfit = "partially undressed / clothes loosened"
+            heat += 5
+    if any(w in text for w in ("naked", "nude", "fully undressed")):
+        outfit = "nude"
+        heat += 8
+    if "stockings" in text or "pencil skirt" in text or "blouse" in text:
+        outfit = "corporate: glasses, blouse, pencil skirt, stockings"
+
+    heat = max(0, min(100, heat))
+    rapport = max(0, min(100, rapport))
+    return {
+        "heat": heat,
+        "rapport": rapport,
+        "location": location,
+        "outfit": outfit,
+        "scene_notes": notes,
+    }
+
+
 async def _call_model(
     *,
     messages: list[dict[str, str]],
     model: str,
-    max_tokens: int = 280,
+    max_tokens: int = 320,
     temperature: float = 0.85,
 ) -> str:
     client = _get_client()
@@ -220,6 +340,7 @@ async def generate_reply(
     user_message: str,
     history: list[dict[str, Any]],
     character_profile: str = "A warm, slightly playful companion who enjoys conversation and roleplay.",
+    scene_state: dict[str, Any] | None = None,
     system_prompt: str | None = None,
     is_continue: bool = False,
     is_regenerate: bool = False,
@@ -228,7 +349,10 @@ async def generate_reply(
     model = _get_model()
 
     if system_prompt is None:
-        system_prompt = DEFAULT_SYSTEM_PROMPT.format(character_profile=character_profile)
+        system_prompt = DEFAULT_SYSTEM_PROMPT.format(
+            character_profile=character_profile,
+            scene_block=format_scene_block(scene_state),
+        )
 
     messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
 
@@ -255,14 +379,17 @@ async def generate_reply(
     if not messages or messages[-1].get("content") != effective_user:
         messages.append({"role": "user", "content": effective_user})
 
-    temperature_tokens = 300 if is_regenerate else 280
+    heat = int((scene_state or {}).get("heat") or 0)
+    max_tokens = 360 if heat < 40 else 300 if heat < 70 else 240
+    if is_regenerate:
+        max_tokens = min(max_tokens + 40, 400)
 
     try:
         try:
             reply = await _call_model(
                 messages=messages,
                 model=model,
-                max_tokens=temperature_tokens,
+                max_tokens=max_tokens,
             )
         except RateLimitError:
             fallback = _get_fallback_model()
@@ -271,7 +398,7 @@ async def generate_reply(
                 reply = await _call_model(
                     messages=messages,
                     model=fallback,
-                    max_tokens=temperature_tokens,
+                    max_tokens=max_tokens,
                 )
             else:
                 raise
@@ -282,8 +409,8 @@ async def generate_reply(
                 {
                     "role": "user",
                     "content": (
-                        "[System: Reply in character only. Stay in the current moment. "
-                        "Include atmosphere or body language plus dialogue.]"
+                        "[System: Reply in character only. Stay in locked location and outfit. "
+                        "Include body language, dialogue, and one brief feeling.]"
                     ),
                 }
             ]
@@ -316,20 +443,11 @@ def _history_blob(history: list[dict[str, Any]], last_assistant: str) -> str:
 
 
 def _scene_defaults(history: list[dict[str, Any]], last_assistant: str) -> tuple[str, str]:
-    """Fallback Soft/Bold locked to detected scene — never random bar lines mid-intimacy."""
     blob = _history_blob(history, last_assistant)
 
     if any(
         w in blob
-        for w in (
-            "shower",
-            "tub",
-            "bathroom",
-            "steam",
-            "scrub",
-            "under the water",
-            "tile",
-        )
+        for w in ("shower", "tub", "bathroom", "steam", "scrub", "under the water", "tile")
     ):
         return (
             "*keeps my hands gentle on her back* like this?",
@@ -338,16 +456,7 @@ def _scene_defaults(history: list[dict[str, Any]], last_assistant: str) -> tuple
 
     if any(
         w in blob
-        for w in (
-            "bed",
-            "apartment",
-            "naked",
-            "moan",
-            "kiss",
-            "thigh",
-            "between us",
-            "make you feel",
-        )
+        for w in ("bed", "apartment", "naked", "moan", "kiss", "thigh", "between us", "make you feel")
     ):
         return (
             "*slows down and kisses her shoulder*",
@@ -396,8 +505,7 @@ async def generate_suggestions(
         "- First person or *action* from the USER only\n"
         "- MUST react to what Aria just said or did\n"
         "- Do NOT invent a new location or reset the scene\n"
-        "- FORBIDDEN: interview questions, 'tell me more about yourself', "
-        "bar-stool lines if the scene is already elsewhere\n"
+        "- FORBIDDEN: interview questions, 'tell me more about yourself'\n"
         "Format EXACTLY:\n"
         "1) <soft option>\n"
         "2) <bold option>\n\n"
