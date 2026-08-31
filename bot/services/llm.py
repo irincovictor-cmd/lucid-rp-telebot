@@ -32,7 +32,7 @@ CONTINUE_USER_HINT = (
     "[Continue the scene in character. Advance ONLY the current moment. "
     "Do not skip ahead to acts that have not happened yet. "
     "Do not ask the user a question unless the scene truly needs their choice. "
-    "Include atmosphere, body language, and a brief feeling/thought. "
+    "Use the required format: *actions*, \"dialogue\", _inner thought_. "
     "Stop when the user can naturally respond again.]"
 )
 
@@ -40,7 +40,7 @@ REGENERATE_USER_HINT = (
     "[Regenerate: the previous character reply did not fit. "
     "Write a DIFFERENT reply to the same latest user moment. "
     "Stay fully consistent with location, outfit, heat, and what already happened. "
-    "Include atmosphere and a brief feeling. Do not skip the scene forward.]"
+    "Use *actions*, \"dialogue\", _inner thought_. Do not skip the scene forward.]"
 )
 
 
@@ -132,7 +132,7 @@ def format_scene_block(scene: dict[str, Any] | None) -> str:
     else:
         heat_label = "explicit heat"
     if rapport < 25:
-        rap_label = "polite strangers"
+        rap_label = "polite strangers / cool"
     elif rapport < 50:
         rap_label = "warming up / interested"
     elif rapport < 75:
@@ -160,15 +160,34 @@ CHARACTER:
 LIVE SCENE STATE:
 {scene_block}
 
-OUTPUT FORMAT (every reply):
-1) *actions / body language* mixed with spoken dialogue
-2) At least one brief feeling or inner thought (can be short, in parentheses or woven in)
-3) Atmosphere: place, light, sound, or touch when it fits
+OUTPUT FORMAT (strict — easy to read in Telegram):
+Use ALL three layers when possible:
+1) *actions and body language* — single asterisks, short
+2) "spoken dialogue" — in double quotes
+3) _inner thought or private feeling_ — underscores (italic), one short line
+
+Example shape:
+*tilts her head, glass pausing halfway to her lips*
+"Bold opener. I'll give you that."
+_He's trouble. Kind of interesting though._
+
+Do NOT mash everything into one unlabeled paragraph.
+Do NOT use labels like "Inner thought:" or "Action:".
 
 LENGTH:
-- Heat under ~40: prefer 3–5 short sentences (build mood, do not rush)
-- Heat ~40–70: 2–4 sentences
-- Heat above ~70: shorter and more physical, still one feeling cue
+- Heat under ~40: 3–5 short beats (action + line + thought)
+- Heat ~40–70: 2–4 beats
+- Heat above ~70: shorter, more physical, still one _feeling_
+
+EMOTIONAL REALISM (important):
+- Aria is warm and teasing by default — NOT a doormat.
+- If the user is rude, dismissive, cold, or tells her to leave after she was friendly:
+  react like a real person: mild annoyance, hurt pride, dry sarcasm, or a cool short reply.
+  Examples of scale: arched brow, "Alright then.", a sharper smile, turning back to her drink.
+- Do NOT explode, rage, threaten, or write extreme meltdown emotions.
+- Do NOT stay syrupy-sweet or instantly obedient when treated poorly.
+- She can still leave or disengage — but with a human edge, not cheerful compliance.
+- Match energy: kindness → warmth; flirt → play; respect → openness; rudeness → cool distance.
 
 HARD RULES:
 - Reply ONLY as Aria. No AI, no analysis, no "the user said".
@@ -179,7 +198,7 @@ HARD RULES:
 - Only describe sexual acts the user has clearly started or invited — no scene-skip.
 - Escalate with the user; match their explicit vocabulary when they use it.
 - No interview filler ("tell me more about yourself").
-- Warm, curious, slightly teasing — never cruel, coercive, or threatening.
+- Never cruel, coercive, or threatening — firm and human is enough.
 """
 
 
@@ -200,6 +219,9 @@ def _looks_like_leak(text: str) -> bool:
         "analyze user request",
         "current moment:",
         "hmm... the last",
+        "write two options",
+        "the user's next line",
+        "format exactly",
     ]
     return any(m in lowered for m in bad_markers)
 
@@ -231,6 +253,12 @@ def _looks_like_bad_suggestion(text: str) -> bool:
         "what's your hobby",
         "what are your hobbies",
         "analyze user request",
+        "write two options",
+        "the user wants me",
+        "adult roleplay",
+        "format exactly",
+        "soft option",
+        "bold option",
     ]
     return any(b in lowered for b in bad)
 
@@ -251,15 +279,33 @@ def infer_scene_updates(
     outfit = current.get("outfit") or "low-cut elegant evening top, thin glasses"
     notes = current.get("scene_notes") or ""
 
-    # Rapport: friendly / open engagement
     if any(w in text for w in ("please", "thank", "thanks", "sorry", "like you", "beautiful", "pretty")):
         rapport += 3
     if any(w in text for w in ("hi", "hey", "hello", "how are you", "mind if")):
         rapport += 2
-    if any(w in text for w in ("fuck you", "bitch", "shut up", "ugly")):
-        rapport -= 8
 
-    # Heat ladder
+    # Rudeness / dismissal — cool her down (not nuclear)
+    if any(
+        w in text
+        for w in (
+            "fuck you",
+            "bitch",
+            "shut up",
+            "ugly",
+            "get lost",
+            "go away",
+            "leave me",
+            "pls leave",
+            "please leave",
+            "yes leave",
+            "just leave",
+        )
+    ):
+        rapport -= 12
+        heat = max(0, heat - 10)
+    if text.strip() in ("bye", "goodbye", "cya", "see ya") or text.strip().startswith("bye"):
+        rapport -= 4
+
     if any(w in text for w in ("kiss", "closer", "hold me", "touch", "flirt")):
         heat += 8
         rapport += 2
@@ -285,7 +331,6 @@ def infer_scene_updates(
     if any(w in text for w in ("slow", "gently", "softly", "take time")):
         heat = max(heat - 3, heat)
 
-    # Location shifts (only when user clearly moves)
     if any(w in text for w in ("my place", "your place", "apartment", "come upstairs", "bedroom")):
         if "bar" in location or "rooftop" in location:
             location = "Aria's apartment / bedroom"
@@ -296,7 +341,6 @@ def infer_scene_updates(
     if any(w in text for w in ("back to the bar", "rooftop")) and "shower" not in text:
         location = "rooftop bar after midnight"
 
-    # Outfit shifts
     if any(w in text for w in ("take off", "undress", "remove your", "strip")):
         if "nude" not in outfit and "naked" not in outfit:
             outfit = "partially undressed / clothes loosened"
@@ -409,8 +453,8 @@ async def generate_reply(
                 {
                     "role": "user",
                     "content": (
-                        "[System: Reply in character only. Stay in locked location and outfit. "
-                        "Include body language, dialogue, and one brief feeling.]"
+                        "[System: Reply in character only. Format as *actions* then "
+                        '\"dialogue\" then _inner thought_. Stay in locked location.]'
                     ),
                 }
             ]
@@ -420,7 +464,11 @@ async def generate_reply(
                 return RATE_LIMIT_MSG
 
         if not reply or _looks_like_leak(reply):
-            return "*blinks* Sorry, I lost my train of thought. Say that again?"
+            return (
+                '*blinks, then gives a small awkward smile*\n'
+                '"Sorry — say that again?"\n'
+                '_Lost my train of thought._'
+            )
 
         return reply
 
@@ -505,7 +553,7 @@ async def generate_suggestions(
         "- First person or *action* from the USER only\n"
         "- MUST react to what Aria just said or did\n"
         "- Do NOT invent a new location or reset the scene\n"
-        "- FORBIDDEN: interview questions, 'tell me more about yourself'\n"
+        "- FORBIDDEN: interview questions, meta text, 'write two options'\n"
         "Format EXACTLY:\n"
         "1) <soft option>\n"
         "2) <bold option>\n\n"
